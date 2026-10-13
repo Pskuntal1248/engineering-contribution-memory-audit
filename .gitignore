@@ -1,15 +1,18 @@
-__pycache__/
-.venv/
-*.pyc
-build/
+# Local credentials and account/profile state
+.env
+.env.*
+!.env.example
 .gravity/
-requirements.lock
-.pytest_cache/
-out/
 
-# audit copy: personal data stays local
+# Local audit artifacts and generated outputs
+audit/
+out/
+build/
+
+# Python/editor caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 .DS_Store
-audit/run1_*
-audit/run3_*.md
-audit/pre5.*
-audit/p.log
