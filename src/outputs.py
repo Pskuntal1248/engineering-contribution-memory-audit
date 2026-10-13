@@ -535,9 +535,16 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                 run_notes.append(f"interview stories: {len(linked)} link URL(s) (story evidence and the ledger) contain a redacted or internal name (the repo, organisation or Jira site). "
                                  "The links are kept so every story stays linked to its evidence, which means the stories are NOT safe to share as they are: strip or replace those URLs first (official AC12 check not run).")
         sections.insert(1, {"heading": "Coverage", "body": f"{len(st)} stor{'y has' if len(st) == 1 else 'ies have'} evidence behind them. Stories for a disagreement are only included when a thread or PR discussion shows one; none is invented."})
-    short_notes = [f"{f['source']}: {clip(f["error"], 420)}" for f in failed] + [n for n in run_notes if not n.startswith(("topic grouping used", "capped: notion: single"))]
-    if short_notes:
-        sections.append({"heading": "What could not be done", "bullets": short_notes[:6]})
+    from report_notes import split_notes, FALLBACK
+    info_notes, skipped_notes, limit_notes = split_notes(run_notes)
+    failure_notes = [f"{f['source']}: {clip(f["error"], 420)}" for f in failed] + limit_notes
+    if failure_notes:
+        sections.append({"heading": "What could not be done", "bullets": list(dict.fromkeys(failure_notes))})
+    if info_notes:
+        sections.append({"heading": "Run info", "bullets": info_notes})
+    if skipped_notes:
+        sections.append({"heading": "Skipped features", "bullets": skipped_notes})
+    run_notes = info_notes + skipped_notes + limit_notes
     sections = [s_ for s_ in sections if s_.get("bullets") or s_.get("table") or s_.get("body") or s_.get("sections") or s_.get("facts")]
     # The platform's CSV export is the FIRST TABLE in the corpus, so the ledger is the only table and sits last (an appendix).
     sections.append({"heading": "Appendix: item ledger (also the CSV download)",
@@ -562,7 +569,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
               "decisions": len(profile["decisions"]), "improvement_areas": [a["label"] for a in profile["improvements"]],
               "evidence_gaps": [{"expectation": g["expectation"], "status": g["status"]} for g in profile["gaps"]],
               "unavailable": list(dict.fromkeys(f["source"] for f in failed)),
-              "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "ledger_rows": len(rows)}
+              "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "analysis_status": "degraded" if FALLBACK in limit_notes else "not_flagged", "ledger_rows": len(rows)}
     return corpus, result
 
 
