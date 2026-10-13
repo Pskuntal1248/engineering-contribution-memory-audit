@@ -1,6 +1,6 @@
 # Engineering Contribution Memory (UC-10)
 
-A Gravity monitor agent (gravity-cli 0.5.2, plain LangGraph). Read-only: it never writes to GitHub, Jira, Slack or docs.
+A Gravity monitor agent (gravity-cli 0.5.4, plain LangGraph). Read-only: it never writes to GitHub, Jira, Slack or docs.
 
 Reads your last 6 months of work, links PRs, tickets, discussions and docs into projects, finds work that never made it into a ticket, and keeps an evidence-linked profile. Code computes every number; the model (optional) only labels and words, and its output is validated against real item ids.
 
@@ -16,13 +16,24 @@ Run tests: `uv venv --python 3.12 && uv pip install -r requirements.txt pytest &
 
 Status: work in progress, private, not submitted to Gravity.
 
-## On-demand requests (checked against the Gravity 0.5.0 guide)
+## On-demand requests
 This agent is `kind: monitor`. The guide offers follow-up runs with the user's words (`inputs["message"]`) only for `kind: interactive`, so a monitor does not get them. On-demand answers (what did I do on project X, year summary, review-pack, promotion evidence) are chosen with the `request` dropdown plus `period_from` / `period_to` on a manual run. "What to produce" is the only output selector and the two date fields are the only source of a review period: there is no typed-request box, and no text is read for a mode or dates. They are answered from the saved profile with no source reads. Free-text follow-ups are not supported; this is a deliberate choice, not an oversight.
 
 ## Required inputs and example run
-Required (as in the UC-10 inputs table): `github_username`, `repos_or_org`, `jira_site`, `jira_projects`, `slack_channels`, `role_and_level`, `timezone` (defaults to Asia/Kolkata). Optional: `include_dms` (No), `docs_source`, `backfill_months` (6), `review_framework`. Jira uses jira.search_issues (assigned, created or commented by you, in `jira_projects`), jira.get_issue with the changelog (reopens, moved keys) and jira.list_issue_comments. `docs_source` picks Confluence (cql_search, get_page_by_id), Notion (search_notion_page, get_page_markdown) and/or Google Drive (find_file, export). A source that is not chosen or fails is named in the result, not silently skipped. Slack uses slack.search_messages for your own messages in the chosen channels only, then fetches each thread; DMs are read only with `include_dms` = Yes. Connect the accounts first with `gravity connect jira|confluence|notion|slack|github`.
+Required form inputs: `repos_or_org`, `jira_projects`, `slack_channels`, `role_and_level`. `github_username` and `jira_site` are optional overrides, filled from the connected accounts when blank. `timezone` defaults to Asia/Kolkata. Optional: `include_dms` (No), `docs_source`, `backfill_months` (6), `review_framework`. Jira uses jira.search_issues (assigned, created or commented by you, in `jira_projects`), jira.get_issue with the changelog (reopens, moved keys) and jira.list_issue_comments. `docs_source` picks Confluence (cql_search, get_page_by_id), Notion (search_notion_page, get_page_markdown) and/or Google Drive (find_file, get_document and revision edit evidence). A source that is not chosen or fails is named in the result, not silently skipped. Slack uses slack.search_messages for your own messages in the chosen channels only, then fetches each thread; DMs are read only with `include_dms` = Yes. Run `gravity connect` first to check whose accounts the gateway uses. On a personal/per-builder route, connect each needed app separately, for example `gravity connect github`, `gravity connect jira` and `gravity connect slack`. If it reports `builder:local` or a shared test account, do not connect personal apps there; ask Gravity to reconnect the test account.
 ```
 gravity run --input github_username='USER' --input repos_or_org='owner/repo' --input jira_site='https://example.atlassian.net' --input jira_projects='ABC' --input slack_channels='#general' --input role_and_level='Software Engineer' --input display_name='Full Name' --input backfill_months='6'
 gravity run --input github_username='USER' --input repos_or_org='owner/repo' --input jira_site='https://example.atlassian.net' --input jira_projects='ABC' --input slack_channels='#general' --input role_and_level='Software Engineer' --input request='one_on_one'
 ```
 Slack is read only for the channels named in `slack_channels`. Commits by the user are read too (via github.list_commits and github.get_commit), so repos without PRs still show work. Commits already counted through a PR, merge commits and bot commits are dropped; a commit that a later "This reverts commit" points at is listed but not counted. The second command answers from saved memory (`.gravity/memory.json`) even if the first run found nothing.
+
+
+## Submission hygiene
+
+`gravity validate` resolves requirements.lock for Python 3.12/Linux ARM64. Keep that lockfile with the source. `gravity build` packages manifest, requirements, src and tests; it does not package audit/, .gravity/, out/ or root run_all.py. Inspect the built ZIP before publishing.
+
+Use `gravity dev` or a scoped `gravity run` for a deliberate live test. These call real tools and models. Selecting Google Drive can read the connected account's edited documents in the run window; it is not restricted to a synthetic test document.
+
+`run_all.py` is a personal synthetic live-test harness retained because its output checker is covered by a regression test. It has fixed test scopes and moves local saved state to a backup before running. Do not use it as the normal agent entry point or run it casually.
+
+Local fixture tests are not Gravity's official UC-10 acceptance suite. Interview evidence URLs may reveal internal names and are not safe to share externally as-is. Keep this repository private: removing audit artifacts from the current tree does not erase them from earlier Git commits.
