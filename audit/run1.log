@@ -1,0 +1,147 @@
+
+  engineering-contribution-memory@0.1.1  run grt_…u_B0 · 32 tools declared
+
+  ● load                                                                   14.5s
+    ✓                                 https://api.github.com/users/Pskun…   6.9s
+github.get_the_authenticated_user                                               
+    ✓ jira.get_server_info                                                  7.6s
+  ● fetch                                                                  82.9s
+    ✓ slack.list_channels             4 found                               7.5s
+    ✓ jira.get_all_projects           5 found                               7.6s
+    ✓ github.search_issues            11 found                              7.7s
+    ✓ slack.search_messages           12 found                              7.3s
+    ✓ jira.search_issues              8 found                               8.4s
+    ✓ drive.get_about                                                       6.9s
+    ✓ drive.find_file                 5 found                               7.4s
+    ✓                                 4 found                               6.9s
+slack.fetch_message_thread_from_a_c…                                            
+    ✓                                 4 found                               6.7s
+slack.fetch_message_thread_from_a_c…                                            
+    ✓                                 2 found                               6.5s
+slack.fetch_message_thread_from_a_c…                                            
+    ✓                                 2 found                               7.3s
+slack.fetch_message_thread_from_a_c…                                            
+    ✓ github.search_issues                                                  7.2s
+    ✓ jira.get_issue                  4 found                               7.6s
+    ✓ jira.get_issue                  10051                                 7.3s
+    ✓ jira.get_issue                  10050                                 8.2s
+    ✓ jira.get_issue                  10049                                 7.6s
+    ✓ jira.get_issue                  10048                                 7.9s
+    ✓ jira.get_issue                  10047                                 7.6s
+    ✓                                                                       8.0s
+drive.export_google_workspace_file                                              
+    ✓ drive.list_revisions            2 found                               9.0s
+    ✓ github.list_pull_requests       11 found                              7.0s
+    ✓ jira.get_issue                  10046                                 7.8s
+    ✓ jira.get_issue                  10045                                 7.6s
+    ✓ github.list_pr_files                                                  6.9s
+    ✓ github.list_pr_reviews                                                6.8s
+    ✓                                 https://api.github.com/repos/Pskun…   7.3s
+github.list_commits_on_a_pull_reque…                                            
+    ✓ github.list_pr_files                                                  7.0s
+    ✓ github.list_pr_reviews                                                7.8s
+    ✓                                 https://api.github.com/repos/Pskun…   7.3s
+github.list_commits_on_a_pull_reque…                                            
+    ✓ github.list_pr_files                                                  7.3s
+    ✓ github.list_pr_reviews                                                6.7s
+    ✓                                 https://api.github.com/repos/Pskun…   6.8s
+github.list_commits_on_a_pull_reque…                                            
+    ✓ github.list_pr_files                                                  7.5s
+    ✓ github.list_pr_reviews                                                6.7s
+    ✓                                 https://api.github.com/repos/Pskun…   7.3s
+github.list_commits_on_a_pull_reque…                                            
+    ✓ github.list_pr_files                                                  7.0s
+    ✓ github.list_pr_reviews                                                6.7s
+    ✓                                 https://api.github.com/repos/Pskun…   6.9s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   7.1s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   6.9s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   7.0s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   7.0s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   7.0s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                 https://api.github.com/repos/Pskun…   7.2s
+github.list_commits_on_a_pull_reque…                                            
+    ✓                                                                       9.8s
+drive.export_google_workspace_file                                              
+    ✓                                                                      10.1s
+drive.export_google_workspace_file                                              
+    ✓ github.list_pr_files                                                  7.3s
+    ✓ github.list_pr_reviews          5478514195                            7.8s
+    ✓ github.list_pr_files                                                  7.2s
+    ✓ github.list_pr_reviews          2 found                               7.4s
+    ✓ github.list_pr_files                                                  7.7s
+    ✓ github.list_pr_reviews          5478511918                            7.6s
+    ✓ github.list_pr_files                                                  7.7s
+    ✓ github.list_pr_reviews          5478511206                            8.2s
+    ✓ github.list_pr_files                                                  7.6s
+    ✓ github.list_pr_reviews          5478510454                            7.5s
+    ✓ github.list_pr_files                                                  7.1s
+    ✓ github.list_pr_reviews          5478514882                            7.7s
+    ✓                                                                      10.2s
+drive.export_google_workspace_file                                              
+    ✓ github.list_commits                                                   8.3s
+    ✓ github.get_commit               https://api.github.com/repos/Pskun…   6.8s
+    ✓ github.get_commit               https://api.github.com/repos/Pskun…   7.5s
+  ● analyse                                                                25.9s
+    ◆ openai/gpt-6-luna                                                     6.8s
+    ◆ openai/gpt-6-luna                                                     5.7s
+    ◆ openai/gpt-6-luna                                                    10.7s
+  ● render                                                                  0.0s
+  ● persist                                                                 0.0s
+  ╭─ result ───────────────────────────────────────────────────────────────────╮
+  │ title                 Engineering profile - Pskuntal1248                   │
+  │ mode                  backfill                                             │
+  │ stats                 {"prs_authored": 11, "prs_shipped": 5,               │
+  │ "commits_authored": 0, "prs_reverted": 2, "median_cycle_hours": 0.0,       │
+  │ "reviews_given": 0, "tickets_touched": 8, "tickets_reopened": 1,           │
+  │ "threads": 4, "docs": 4}                                                   │
+  │ projects              3                                                    │
+  │ invisible_work        3                                                    │
+  │ decisions             2                                                    │
+  │ notes                                                                      │
+  │ • GitHub username taken from the connected GitHub account: Pskuntal1248.   │
+  │ If that is not you, type your username in the form and run again           │
+  │ • Jira site taken from the connected Jira account:                         │
+  │ https://pskuntal2005.atlassian.net                                         │
+  │ • capped: drive: 1 doc(s) you can access had no proof you wrote or edited  │
+  │ them in the report period - listed by title only, bodies not read, not     │
+  │ credited                                                                   │
+  │ • Rows not counted (22): merge commit or commit already counted through    │
+  │ its PR (11); commit already counted through its PR (its SHA is one of the  │
+  │ PR's commits, a shared ticket key, or the same files, inside the PR's      │
+  │ dates) (11).                                                               │
+  │ • topic grouping used embeddings (1 call to the Gravity endpoint) plus     │
+  │ keywords                                                                   │
+  │ • no review framework given: evidence gaps skipped; a framework would      │
+  │ enable them                                                                │
+  │ ledger_rows           30                                                   │
+  │ status                completed                                            │
+  │ model_calls           4                                                    │
+  │ seconds               108.8                                                │
+  │ new_items             30                                                   │
+  │ docs_sources_asked                                                         │
+  │ • google drive                                                             │
+  │ docs_items_by_source  {"google drive": 5}                                  │
+  │ dm_reads              0                                                    │
+  │ page_summary          5 PRs shipped, 0 reviews, 3 pieces of invisible work │
+  │ (1 listed under Problems solved), 2 decisions. Every item below links to   │
+  │ its source.                                                                │
+  │ page_sections                                                              │
+  │ • Projects                                                                 │
+  │ • Problems solved                                                          │
+  │ • Decisions                                                                │
+  │ • Invisible work                                                           │
+  │ • Skills                                                                   │
+  │ • Improvement areas                                                        │
+  │ • Evidence gaps                                                            │
+  │ • What could not be done                                                   │
+  │ • Appendix: item ledger (also the CSV download)                            │
+  │ page_chars            6347                                                 │
+  ╰────────────────────────────────────────────────────────────────────────────╯
+
+  ✓ Done in 129.0s  

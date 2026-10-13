@@ -1,0 +1,1260 @@
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/agent.py uc10-audit/src/agent.py
+--- /tmp/round2_base/src/agent.py	2026-10-13 18:09:35
++++ uc10-audit/src/agent.py	2026-10-13 18:25:33
+@@ -21,7 +21,7 @@
+ from sources import GatewaySource, Source
+ from store import NativeMemoryStore, PlatformStore, ProfileStore, platform_store
+ from ask import parse_request, parse_team_changes
+-from inputs import parse_months, validate_inputs
++from inputs import backfill_since, parse_months, validate_inputs
+ from weekly import new_items, next_cursors, quiet_week_line, since_for, id_key
+ 
+ ON_DEMAND = {"weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"}
+@@ -85,6 +85,11 @@
+     async def load(state: State) -> dict:
+         inp = dict(state.get("inputs", {}))
+         problems = validate_inputs(inp)
++        if not problems and str(inp.get("backfill_months") or "").strip():
++            try:
++                backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)
++            except ValueError as e:
++                problems.append(str(e))
+         if problems:  # explicit, all at once, before any source call or model call
+             raise ValueError("The run was stopped before reading anything. Fix these inputs and run again:\n- " + "\n- ".join(problems))
+         if str(inp.get("request") or "").strip():
+@@ -158,15 +163,7 @@
+         if mode in ON_DEMAND:  # answers come from the saved profile, no source reads
+             ctx["raw"] = {"failed": [], "capped": []}
+             return {"ctx": ctx}
+-        months = parse_months(inp.get("backfill_months")) or 6
+-        floor = datetime(1970, 1, 1, tzinfo=timezone.utc)  # a month count that reaches back past 1970 reads from 1970: the date arithmetic cannot go further
+-        try:
+-            start_dt = max(deps.now() - timedelta(days=30 * months), floor)
+-        except OverflowError:
+-            start_dt = floor
+-        if start_dt == floor:
+-            ctx["notes"].append(f"backfill_months={months} reaches back before 1970, so everything since 1970-01-01 was read")
+-        start = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
++        start = backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)  # load() already refused a request that cannot be represented
+         cursor = (ctx["prior"].get("cursors") or {}).get("github")
+         since = since_for(cursor, start) if mode == "weekly" else start
+         ctx["since"] = since
+@@ -277,8 +274,11 @@
+ 
+     async def persist(state: State) -> dict:
+         ctx, inp = state["ctx"], state["inputs"]
+-        if ctx["mode"] in ON_DEMAND and ctx.get("prof") and ctx["prof"].get("framework_cache_new") and hasattr(ctx["store"], "asave_framework"):
+-            await ctx["store"].asave_framework(ctx["prof"]["framework_cache"])  # only the extracted-framework cache entry; the profile itself is not touched
++        if ctx["mode"] in ON_DEMAND and ctx.get("prof") and hasattr(ctx["store"], "asave_framework"):  # only the cache entries; the profile itself is not touched
++            if ctx["prof"].get("framework_cache_new"):
++                await ctx["store"].asave_framework(ctx["prof"]["framework_cache"])
++            if ctx["prof"].get("mapping_cache_new"):
++                await ctx["store"].asave_mapping(ctx["prof"]["mapping_cache"])
+         if ctx["mode"] in ON_DEMAND or ctx["raw"].get("blocked"):
+             return {}  # on-demand answers and stopped runs never change the saved profile
+         prof, items, prior = ctx["prof"], ctx["items"], ctx["prior"]
+@@ -293,6 +293,8 @@
+         }
+         if prof.get("framework_cache") or prior.get("framework"):
+             profile["framework"] = prof.get("framework_cache") or prior.get("framework")
++        if prof.get("mapping_cache") or prior.get("mapping"):
++            profile["mapping"] = prof.get("mapping_cache") or prior.get("mapping")
+         store = ctx["store"]
+         memory = await store.adump(profile) if hasattr(store, "adump") else store.dump(profile)
+         # memory is written only here, after the work above succeeded
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/eprofile.py uc10-audit/src/eprofile.py
+--- /tmp/round2_base/src/eprofile.py	2026-10-13 18:09:04
++++ uc10-audit/src/eprofile.py	2026-10-13 18:24:35
+@@ -10,7 +10,7 @@
+ import metrics
+ from guards import Budget, Statement, cap_role, confidential_ids, drop_colleague_assessments, keep_cited, predicts_promotion
+ import ladder
+-from ladder import Expectation, map_evidence, parse_framework, statuses
++from ladder import Expectation, parse_framework, statuses
+ from models import Item
+ from weekly import id_key
+ 
+@@ -170,17 +170,27 @@
+             fw_status = "unparsed"
+             notes.append("review framework: it has no bullet or numbered lines and no model was available to read it, so evidence gaps were NOT run")
+         else:
+-            exps, why = await ladder.extract_with_model(llm, budget, framework, role_and_level)
++            exps, why, rejected = await ladder.extract_with_model(llm, budget, framework, role_and_level)
+             if exps:
+-                fw_status, fw_cache, fw_cache_new = "model", {"hash": h, "exps": [{"id": e.id, "level": e.level, "text": e.text} for e in exps]}, True
+-                notes.append(f"review framework: it was prose, so the model extracted {len(exps)} expectations from it; they are saved and reused while the framework is unchanged")
++                fw_status, fw_cache, fw_cache_new = "model", {"hash": h, "exps": [{"id": e.id, "level": e.level, "text": e.text, "quote": e.quote} for e in exps]}, True
++                notes.append(f"review framework: it was prose, so the model extracted {len(exps)} expectations, each with a quote from the framework; they are saved and reused while the framework is unchanged"
++                             + (f" ({rejected} extracted line(s) had no quote in the framework and were dropped)" if rejected else "") + (f"; {why}" if why else ""))
+             else:
+                 fw_status = "failed"
+                 notes.append(f"review framework: it was provided but its expectations could not be extracted - {why}. Evidence gaps were NOT run")
+-    if exps:
+-        known = set(by_id)
+-        ev = {e.id: map_evidence(e, items) for e in exps}
+-        gaps = statuses(exps, ev, known)
++    mp = None
++    if exps:  # the model picks which evidence shows each expectation; code checks the ids and counts
++        mp = await ladder.map_evidence_with_model(llm, budget, exps, items, (prior or {}).get("mapping"))
++        gaps = statuses(exps, mp.evidence, set(by_id), incomplete=mp.incomplete)
++        n_un = sum(1 for g in gaps if g["status"] == "unavailable")
++        if mp.reused and not mp.new_calls:
++            notes.append(f"evidence mapping: {mp.reused} evidence item(s) answered from the saved mapping (no model call)")
++        elif mp.new_calls:
++            notes.append(f"evidence mapping: the model compared {len(exps)} expectation(s) with the evidence in {mp.new_calls} request(s); {mp.reused} item(s) were reused from the saved mapping")
++        if mp.incomplete:
++            notes.append(f"evidence mapping UNAVAILABLE for {n_un} expectation(s): " + "; ".join(mp.reasons or ["part of the evidence was not mapped"]) + ". This is not a finding that evidence is missing - those expectations are shown as unavailable")
++        elif mp.reasons:
++            notes.append("evidence mapping: " + "; ".join(mp.reasons))
+     elif fw_status == "absent":
+         notes.append("no review framework given: evidence gaps skipped; a framework would enable them")
+ 
+@@ -193,5 +203,6 @@
+         "gaps": gaps, "stats": stats, "notes": notes, "project_of": {i: p for i, p in project_of.items() if p in {c["project_id"] for c in projects_clean}},
+         "verdicts": {k: v.model_dump() for k, v in allv.items()}, "card_store": card_store, "dverdicts": {k: v.model_dump() for k, v in dverd.items()},
+         "confidential": sorted(confidential_ids(items)), "framework_status": fw_status, "framework_cache": fw_cache, "framework_cache_new": fw_cache_new,
++        "mapping_cache": mp.cache if mp is not None else None, "mapping_cache_new": bool(mp is not None and mp.new_calls),
+         "top": [{"id": i.id, "title": i.title, "lines": metrics.contribution_size(i)} for i in metrics.top_contributions(items, 8)],
+     }
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/inputs.py uc10-audit/src/inputs.py
+--- /tmp/round2_base/src/inputs.py	2026-10-13 18:05:29
++++ uc10-audit/src/inputs.py	2026-10-13 18:25:33
+@@ -4,7 +4,7 @@
+ from __future__ import annotations
+ 
+ import re
+-from datetime import date
++from datetime import date, datetime, timedelta, timezone
+ from typing import Any
+ 
+ REQUESTS = ("weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps")
+@@ -38,6 +38,20 @@
+         m = re.fullmatch(r"\+?(\d+)(?:\.0+)?", s)
+         n = int(m.group(1)) if m else 0
+     return n if n >= 1 else None
++
++
++def backfill_since(now: datetime, months: int) -> str:
++    """The start of the backfill window as YYYY-MM-DDTHH:MM:SSZ: `months` x 30 days before `now`. If that date cannot be represented the request is refused with a
++    clear error - it is never shortened to a nearer date and ingested as if it were the whole period."""
++    floor = datetime(1, 1, 1, tzinfo=timezone.utc)
++    try:
++        start = now - timedelta(days=30 * months)
++        if start < floor:
++            raise OverflowError
++    except OverflowError:
++        most = max(0, (now - floor).days // 30)
++        raise ValueError(f"backfill_months: {months} months reaches back past the earliest date this agent can compute (year 1); the most it can read back is {most} months") from None
++    return f"{start.year:04d}-{start.month:02d}-{start.day:02d}T{start.hour:02d}:{start.minute:02d}:{start.second:02d}Z"
+ 
+ 
+ def repo_entries(raw: Any) -> list[str]:
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/ladder.py uc10-audit/src/ladder.py
+--- /tmp/round2_base/src/ladder.py	2026-10-13 18:09:04
++++ uc10-audit/src/ladder.py	2026-10-13 18:27:18
+@@ -1,75 +1,30 @@
+-"""Career-ladder parsing and a deterministic evidence mapper. The model may map
+-better; its picks are validated against real ids and counted here either way."""
++"""Career-ladder handling. Expectations come from the framework text (bullet lines in code; prose read by the model with a quoted source span).
++Which evidence shows each expectation is chosen by the model from the real item text; code validates every id, removes duplicates, counts items and
++sets backed (3+) / thin (1-2) / missing (0). A model or budget failure is "unavailable", never "missing"."""
+ from __future__ import annotations
+ 
++import asyncio
++import hashlib
+ import re
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
++from typing import Any, Literal
+ 
+-from linking import tokens
++from pydantic import BaseModel, Field
++
++from guards import TRIVIAL_TITLE, BudgetExceeded
+ from metrics import status_for
+ from models import Item
+ 
+ _LEVEL = re.compile(r"^\s*(?:#+\s*|\*\*)?(?:level\s*:?\s*)?((?:senior\s+)?(?:software\s+)?(?:engineer|sde|swe)\s*(?:i{1,3}|iv|v|\d)?|staff\s+engineer|principal\s+engineer|se\s*(?:i{1,3}|iv|v|\d))\b", re.I)
+ 
+ 
+-import hashlib
+-from typing import Literal
+-
+-from pydantic import BaseModel, Field
+-
+-from guards import BudgetExceeded
+-
+-
+-class ExtractedExpectation(BaseModel):
+-    text: str = Field(description="one expectation, worded as in the framework text")
+-    level: Literal["current", "next"] = Field(description="current = asked at the user's current level; next = asked at the next level up")
+-
+-
+-class ExtractedFramework(BaseModel):
+-    expectations: list[ExtractedExpectation]
+-
+-
+-MAX_EXPECTATIONS = 40
+-
+-
+-def framework_hash(text: str, role_and_level: str) -> str:
+-    return hashlib.sha256((role_and_level.strip().lower() + "\n" + text.strip()).encode()).hexdigest()[:16]
+-
+-
+-async def extract_with_model(llm, budget, framework: str, role_and_level: str) -> tuple[list["Expectation"], str]:
+-    """Expectations from a framework written as prose. Every extracted line must be grounded in the framework text (most of its words appear
+-    there), so the model cannot invent an expectation. Returns (expectations, reason) - the reason is empty on success."""
+-    system = ("You read a company career ladder / review framework. List the expectations it states, each as one short line, worded as in the text. "
+-              "level=current for expectations at the user's current level, level=next for the level above it; if the text does not separate levels, use next. "
+-              "Use ONLY the given text. Do not add, merge or invent expectations.")
+-    try:
+-        res = await llm.structured(ExtractedFramework, system, {"role_and_level": role_and_level, "framework_text": framework[:12000]}, budget)
+-    except BudgetExceeded as e:
+-        return [], f"the model limit was reached before the framework could be read ({e})"
+-    except Exception as e:  # noqa: BLE001
+-        return [], f"the model call failed ({str(e)[:120]})"
+-    src = set(tokens(framework))
+-    out: list[Expectation] = []
+-    seen: set[str] = set()
+-    for x in getattr(res, "expectations", []):
+-        t = re.sub(r"\s+", " ", x.text).strip().rstrip(".")
+-        tt = set(tokens(t))
+-        if not t or t.lower() in seen or not tt or len(tt & src) / len(tt) < 0.6:
+-            continue  # not in the document: dropped
+-        seen.add(t.lower())
+-        out.append(Expectation(f"E{len(out)+1}", x.level, t))
+-        if len(out) >= MAX_EXPECTATIONS:
+-            break
+-    if not out:
+-        return [], "the model returned no expectation that appears in the framework text"
+-    return out, ""
+-
+-
++# ----------------------------------------------------------------------------------------------------------- expectations
+ @dataclass
+ class Expectation:
+     id: str
+     level: str  # "current" | "next"
+     text: str
++    quote: str = ""  # the passage of the framework this expectation was read from (prose frameworks)
+ 
+ 
+ def parse_framework(text: str, current_level: str, next_level: str | None = None) -> list[Expectation]:
+@@ -102,45 +57,208 @@
+     return out
+ 
+ 
+-_TOPICS = [  # (expectation regex, predicate over an item). Deterministic baseline; the model mapping replaces it when used.
+-    (r"review", lambda i: i.type == "review" and i.meta.get("mine") and len(i.text) > 12),
+-    (r"mentor|unblock|coach|onboard", lambda i: i.type == "thread" and i.meta.get("label") in {"mentoring", "help_given"}),
+-    (r"design|document|adr|rfc", lambda i: i.type == "doc" and i.meta.get("mine") and bool(re.search(r"design|adr|rfc|proposal|architecture", i.title, re.I))),
+-    (r"cross.?team|stakeholder.*decision|leads? a .*decision", lambda i: i.type in {"doc", "thread"} and bool(re.search(r"cross.?team|multiple teams|org.?wide|across teams", i.text, re.I)) and i.meta.get("mine")),
+-    (r"incident|debug|reliab|on.?call", lambda i: i.type == "thread" and i.meta.get("label") == "problem_solved"),
+-    (r"test|quality|automation", lambda i: i.type == "pr" and i.meta.get("mine") and bool(re.search(r"\btests?\b|\bqa\b|automation", i.title + " " + i.text, re.I))),
+-    (r"deliver|feature|independent|ship", lambda i: i.type == "pr" and i.meta.get("mine") and i.meta.get("merged_flag") and not i.meta.get("reverted")),
+-    (r"communicat|status|risk", lambda i: i.type == "thread" and i.meta.get("root_is_mine")),
+-]
++MAX_EXPECTATIONS = 40
++WINDOW = 12000  # characters of framework text per extraction call
++MAX_WINDOWS = 3
++MIN_QUOTE_WORDS = 2  # a quote is a passage, not a single word
+ 
+ 
+-def map_evidence(exp: Expectation, items: list[Item], per: int = 8) -> list[str]:
+-    for pat, pred in _TOPICS:
+-        if re.search(pat, exp.text, re.I):
+-            return [i.id for i in sorted((i for i in items if pred(i)), key=lambda i: (i.date, i.id))][:per]
+-    return _map_lexical(exp, items, per)
++class ExtractedExpectation(BaseModel):
++    text: str = Field(description="the expectation in one short line; it may paraphrase, but only what the quote supports")
++    level: Literal["current", "next"] = Field(description="current = asked at the user's current level; next = asked at the next level up")
++    source_quote: str = Field(description="a passage copied word for word from the framework text that states this expectation")
+ 
+ 
+-def _map_lexical(exp: Expectation, items: list[Item], per: int = 8) -> list[str]:
+-    """Deterministic baseline: items whose text shares enough distinctive words with the expectation."""
+-    et = set(tokens(exp.text))
+-    if not et:
+-        return []
+-    scored = []
+-    for it in items:
+-        if not it.meta.get("mine") and it.type != "review":
++class ExtractedFramework(BaseModel):
++    expectations: list[ExtractedExpectation]
++
++
++def _norm(s: str) -> str:
++    s = s.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"').replace("\u2013", "-").replace("\u2014", "-")
++    return re.sub(r"\s+", " ", s).strip().casefold()
++
++
++def framework_hash(text: str, role_and_level: str) -> str:
++    return hashlib.sha256(("v3\n" + role_and_level.strip().lower() + "\n" + text.strip()).encode()).hexdigest()[:16]
++
++
++async def extract_with_model(llm, budget, framework: str, role_and_level: str) -> tuple[list[Expectation], str, int]:
++    """Expectations from a framework written as prose. Each one must carry a source quote that really occurs in the framework text (whitespace, case
++    and typographic quotes ignored); the wording of the expectation itself may be a supported paraphrase. Returns (expectations, reason, rejected):
++    the reason is empty on success, `rejected` counts model lines dropped because their quote is not in the framework."""
++    system = ("You read a company career ladder / review framework. List the expectations it states, each as one short line. For each, copy the passage "
++              "that states it word for word into source_quote. level=current for expectations at the user's current level, level=next for the level above it; "
++              "if the text does not separate levels, use next. Use ONLY the given text. Do not add, merge or invent expectations.")
++    windows = [framework[i : i + WINDOW] for i in range(0, len(framework), WINDOW)]
++    unread = max(0, len(windows) - MAX_WINDOWS)
++    raw: list[ExtractedExpectation] = []
++    first_error = ""
++    for w in windows[:MAX_WINDOWS]:
++        try:
++            res = await llm.structured(ExtractedFramework, system, {"role_and_level": role_and_level, "framework_text": w}, budget)
++            raw += list(getattr(res, "expectations", []))
++        except BudgetExceeded as e:
++            first_error = first_error or f"the model limit was reached before the framework could be read ({e})"
++            break
++        except Exception as e:  # noqa: BLE001
++            first_error = first_error or f"the model call failed ({str(e)[:120]})"
++            break
++    if first_error and not raw:
++        return [], first_error, 0
++    haystack = _norm(framework)
++    out: list[Expectation] = []
++    seen: set[str] = set()
++    rejected = 0
++    for x in raw:
++        q, t = _norm(x.source_quote), re.sub(r"\s+", " ", x.text).strip().rstrip(".")
++        if not t or len(q.split()) < MIN_QUOTE_WORDS or q not in haystack:
++            rejected += 1  # no passage of the framework backs it: invented
+             continue
+-        overlap = len(et & set(tokens(it.title + " " + it.text[:800])))
+-        need = 2 if len(et) >= 3 else 1
+-        if overlap >= need:
+-            scored.append((-overlap, it.date, it.id))
+-    return [i for _, _, i in sorted(scored)[:per]]
++        if _norm(t) in seen:
++            continue
++        seen.add(_norm(t))
++        out.append(Expectation(f"E{len(out)+1}", x.level, t, x.source_quote.strip()))
++    notes = []
++    if first_error:
++        notes.append(f"only part of the framework was read: {first_error}")
++    if unread:
++        notes.append(f"the framework is longer than {MAX_WINDOWS * WINDOW} characters, so the last {unread} part(s) were not read")
++    if len(out) > MAX_EXPECTATIONS:
++        notes.append(f"{len(out)} expectations were found; only the first {MAX_EXPECTATIONS} are used")
++        out = out[:MAX_EXPECTATIONS]
++    if not out:
++        return [], "the model returned no expectation whose source quote appears in the framework text" + (f" ({rejected} rejected)" if rejected else ""), rejected
++    return out, "; ".join(notes), rejected
+ 
+ 
+-def statuses(expectations: list[Expectation], evidence: dict[str, list[str]], known: set[str]) -> list[dict]:
+-    """backed (3+ distinct valid items), thin (1-2), missing (none). Invalid ids never count."""
++# ------------------------------------------------------------------------------------------------------------ evidence mapping
++MAP_BATCH = 60       # evidence items per model request
++MAX_MAP_CALLS = 40   # ceiling on mapping requests in one run; the run's remaining model budget (less a reserve) lowers it further
++MAP_RESERVE = 4      # model calls left for the rest of the run
++MAP_PARALLEL = 4
++MAP_TEXT = 300       # characters of each item's text shown to the model
++KEEP_PER_EXPECTATION = 25
++DIGEST_TEXT = 160    # what a saved item still has (TEXT_KEEP), so a fresh item and its reloaded copy hash the same
++
++
++class ExpectationPick(BaseModel):
++    expectation_id: str
++    item_ids: list[str] = Field(description="ids of the given items whose text shows the user doing this; empty if none does")
++
++
++class EvidenceMap(BaseModel):
++    picks: list[ExpectationPick]
++
++
++def expectations_hash(exps: list[Expectation]) -> str:
++    return hashlib.sha256("\n".join(f"{e.id}|{e.level}|{e.text}" for e in exps).encode()).hexdigest()[:16]
++
++
++def mapping_candidates(items: list[Item]) -> list[Item]:
++    """The user's own work that can count as evidence: not other people's items, not reverts or reverted PRs, not generated/lockfile-only PRs, not trivial commits."""
++    out = []
++    for i in items:
++        m = i.meta
++        if not (m.get("mine") or i.type == "review") or not i.title.strip():
++            continue
++        if m.get("reverted") or m.get("is_revert") or m.get("generated_only"):
++            continue
++        if i.type in {"commit", "pr"} and TRIVIAL_TITLE.search(i.title):
++            continue
++        out.append(i)
++    return sorted(out, key=lambda i: (i.date, i.id), reverse=True)
++
++
++def item_digest(i: Item) -> str:
++    return hashlib.sha1(f"{i.id}|{i.type}|{i.date}|{i.title}|{i.text[:DIGEST_TEXT]}".encode()).hexdigest()[:12]
++
++
++@dataclass
++class Mapping:
++    evidence: dict[str, list[str]] = field(default_factory=dict)
++    incomplete: bool = False          # some candidate evidence was never shown to the model (failure, budget, or the per-run request cap)
++    reasons: list[str] = field(default_factory=list)
++    cache: dict[str, Any] | None = None
++    new_calls: int = 0
++    rejected: int = 0                 # ids the model returned that were not real (fabricated, or from another batch)
++    reused: int = 0                   # candidate items answered from the saved mapping
++
++
++async def map_evidence_with_model(llm, budget, exps: list[Expectation], items: list[Item], cache: dict[str, Any] | None) -> Mapping:
++    res = Mapping()
++    cands = mapping_candidates(items)
++    digest = {c.id: item_digest(c) for c in cands}
++    fw = expectations_hash(exps)
++    cache = cache or {}
++    if cache.get("fw") == fw:  # same expectations: keep the answers for items that have not changed
++        done = {i: h for i, h in (cache.get("items") or {}).items() if digest.get(i) == h}
++        emap = {e.id: [i for i in (cache.get("map") or {}).get(e.id, []) if i in done] for e in exps}
++    else:
++        done, emap = {}, {e.id: [] for e in exps}
++    res.reused = len(done)
++    todo = [c for c in cands if c.id not in done]
++    valid_exps = {e.id for e in exps}
++    exp_payload = [{"expectation_id": e.id, "level": e.level, "expectation": e.text} for e in exps]
++    system = ("For each expectation, pick which of the given evidence items show the user doing it. Judge from each item's own title and text, not from its type or a "
++              "shared word. An item may support several expectations, or none. Return only item_ids that appear in the given items and only expectation_ids from the given "
++              "list; leave item_ids empty when no item shows it. Do not assess or compare people, and do not predict promotion.")
++    if todo and llm is None:
++        res.incomplete = True
++        res.reasons.append("no model was available to map evidence to the expectations")
++    elif todo:
++        batches = [todo[i : i + MAP_BATCH] for i in range(0, len(todo), MAP_BATCH)]
++        room = max(0, getattr(budget, "max_calls", MAX_MAP_CALLS + MAP_RESERVE) - getattr(budget, "calls", 0) - MAP_RESERVE)
++        allowed = min(MAX_MAP_CALLS, room)
++        gate = asyncio.Semaphore(MAP_PARALLEL)
++
++        async def ask(chunk: list[Item]):
++            payload = {"expectations": exp_payload, "items": [{"item_id": c.id, "type": c.type, "date": c.date[:10], "title": c.title, "text": c.text[:MAP_TEXT]} for c in chunk]}
++            async with gate:
++                try:
++                    return await llm.structured(EvidenceMap, system, payload, budget), None
++                except Exception as e:  # noqa: BLE001 - BudgetExceeded included: reported below, never read as "no evidence"
++                    return None, e
++        answers = await asyncio.gather(*(ask(c) for c in batches[:allowed]))
++        for chunk, (got, err) in zip(batches[:allowed], answers):
++            if err is not None:
++                msg = (f"the model limit was reached while mapping evidence ({err})" if isinstance(err, BudgetExceeded) else f"a model call failed while mapping evidence ({str(err)[:120]})")
++                if msg not in res.reasons:
++                    res.reasons.append(msg)
++                continue
++            res.new_calls += 1
++            real = {c.id for c in chunk}
++            for p in getattr(got, "picks", []):
++                if p.expectation_id not in valid_exps:
++                    res.rejected += 1
++                    continue
++                for iid in p.item_ids:
++                    if iid not in real:
++                        res.rejected += 1  # fabricated, or an item from another request
++                    elif iid not in emap[p.expectation_id]:
++                        emap[p.expectation_id].append(iid)
++            for c in chunk:
++                done[c.id] = digest[c.id]
++        if len(batches) > allowed:
++            res.reasons.append(f"{sum(len(b) for b in batches[allowed:])} evidence items were not shown to the model this run (at most {allowed} mapping requests fit this run's model budget); they are mapped on the next run")
++        res.incomplete = any(c.id not in done for c in todo)
++    by_date = {c.id: c.date for c in cands}
++    for k, v in emap.items():
++        emap[k] = sorted(dict.fromkeys(v), key=lambda i: (by_date.get(i, ""), i), reverse=True)[:KEEP_PER_EXPECTATION]
++    res.evidence = emap
++    res.cache = {"fw": fw, "items": done, "map": emap}
++    if res.rejected:
++        res.reasons.append(f"{res.rejected} id(s) returned by the model were not real evidence ids and were ignored")
++    return res
++
++
++def statuses(expectations: list[Expectation], evidence: dict[str, list[str]], known: set[str], incomplete: bool = False) -> list[dict]:
++    """backed (3+ distinct valid items), thin (1-2), missing (none). Invalid ids never count. When the mapping is incomplete, a status that could change
++    with the unseen evidence (thin or missing) is "unavailable": absence of a mapping is not evidence of absence. Three real items are backed either way."""
+     rows = []
+     for e in expectations:
+         ids = [i for i in dict.fromkeys(evidence.get(e.id, [])) if i in known]
+-        rows.append({"id": e.id, "level": e.level, "expectation": e.text, "status": status_for(ids), "evidence": ids})
++        st = status_for(ids)
++        if incomplete and st != "backed":
++            st = "unavailable"
++        rows.append({"id": e.id, "level": e.level, "expectation": e.text, "status": st, "evidence": ids, "count": len(ids), "quote": e.quote})
+     return rows
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/outputs.py uc10-audit/src/outputs.py
+--- /tmp/round2_base/src/outputs.py	2026-10-13 18:14:42
++++ uc10-audit/src/outputs.py	2026-10-13 18:24:35
+@@ -360,7 +360,7 @@
+     out = [{"heading": "Wins", "blocks": wins}, {"heading": "You may not have seen", "blocks": unseen}, {"heading": "Blockers", "blocks": blockers},
+            {"heading": "Decisions made", "blocks": made}, {"heading": "Decision needing input", "blocks": decs}, {"heading": "Working on", "blocks": working}]
+     if gaps:
+-        out.append({"heading": "For the next level", "blocks": [block(g["expectation"], "No evidence yet." if g["status"] == "missing" else f"Only {len(g['evidence'])} item(s), thin.", items=_ev(g["evidence"], by_id, 2)) for g in gaps[:4]]})
++        out.append({"heading": "For the next level", "blocks": [block(g["expectation"], "No evidence yet." if g["status"] == "missing" else "Evidence mapping was unavailable this run - not a finding that evidence is missing." if g["status"] == "unavailable" else f"Only {len(g['evidence'])} item(s), thin.", items=_ev(g["evidence"], by_id, 2)) for g in gaps[:4]]})
+     return [{"heading": s["heading"], "body": "\n\n".join(s["blocks"])} for s in out if s["blocks"]]
+ 
+ 
+@@ -514,7 +514,7 @@
+             sections.append(blocks_sec("Other Slack conversations", [block(i.title, clip(re.sub(r"\s+", " ", " ".join(l.split(": ", 1)[1] if ": " in l[:40] else l for l in i.text.splitlines())), 200), facts=[f"{i.date[:10]}"], items=[i]) for i in rest_], ""))
+     if kind in {"backfill", "profile", "evidence_gaps"}:
+         gaps = profile["gaps"]
+-        sections.append(blocks_sec("Evidence gaps", [block(g["expectation"], f"Level: {g['level']}. Status: {g['status']}." + ("" if g["evidence"] else " No items found."), items=_ev(g["evidence"], by_id, 3)) for g in gaps],
++        sections.append(blocks_sec("Evidence gaps", [block(g["expectation"], f"Level: {g['level']}. Status: {g['status']}." + (f" Framework: \u201c{g['quote']}\u201d." if g.get("quote") else "") + (" The evidence mapping was unavailable this run, so this is NOT a finding that evidence is missing (see What could not be done)." if g["status"] == "unavailable" else "" if g["evidence"] else " No items found."), items=_ev(g["evidence"], by_id, 3)) for g in gaps],
+                             (_FRAMEWORK_MSG.get(profile.get("framework_status", "absent"), _FRAMEWORK_MSG["absent"]))))
+     if kind == "one_on_one":
+         sections = one_on_one(profile, by_id, sts)
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/sources.py uc10-audit/src/sources.py
+--- /tmp/round2_base/src/sources.py	2026-10-13 18:07:25
++++ uc10-audit/src/sources.py	2026-10-13 18:29:15
+@@ -153,7 +153,7 @@
+         picked: list[dict] = []
+         projects = list(self.jira_projects)
+         ok = True
+-        if any("/" not in r for r in self.repos):  # a bare organisation or user name becomes its repositories before anything is read
++        if self.repos:  # a bare organisation or user name becomes its repositories before anything is read; owner/repo entries are de-duplicated
+             ok = await self._expand_repos(out, log)
+         if self.slack_channels or self.include_dms:
+             try:
+@@ -214,26 +214,43 @@
+         return chans, picked, projects, ok
+ 
+     async def _owner_repos(self, tool: str, args: dict, log: ToolLog) -> list[str]:
+-        """Every repository of an organisation or user, page after page until a page is empty or repeats. A listing that cannot be read to the
+-        end raises: a partial list is never used as if it were complete."""
++        """Every repository the tool lists for one owner: page after page (per_page is always set - the tools default to 1 for an organisation and 30 for a
++        user), until a page is empty. A nonempty page that adds nothing new is the tool repeating itself, so the listing is incomplete and this raises:
++        a list that could not be read to its end is never returned as if it were complete."""
++        import adapters
+         names: list[str] = []
+         seen: set[str] = set()
+         for page in range(1, MAX_OWNER_PAGES + 1):
+             log.add(tool, page=page)
+-            got = _rows(await self.call(tool, {**args, "per_page": PAGE, "page": page}), "repositories", "repos", "items", "data")
++            resp = await self.call(tool, {**args, "per_page": PAGE, "page": page})
++            bad = adapters.failed_payload(resp)
++            if bad:
++                raise RuntimeError(bad)
++            got = _rows(resp, "repositories", "repos", "items", "data")
++            if not got:
++                return names  # an empty page ends the listing
+             fresh = []
+             for r in got:
+-                full = str(r.get("full_name") or (f"{(r.get('owner') or {}).get('login')}/{r.get('name')}" if r.get("name") and (r.get("owner") or {}).get("login") else ""))
++                owner = (r.get("owner") or {}).get("login") if isinstance(r.get("owner"), dict) else None
++                full = str(r.get("full_name") or (f"{owner}/{r.get('name')}" if owner and r.get("name") else ""))
+                 if "/" in full and full.lower() not in seen:
+                     seen.add(full.lower())
+                     fresh.append(full)
+-            if not fresh:  # empty page, or the tool ignored the page argument and repeated itself
+-                return names
++            if not fresh:
++                raise RuntimeError(f"INCOMPLETE: page {page} was not empty but repeated repositories already listed, so the listing cannot be trusted to be complete")
+             names += fresh
+-        raise RuntimeError(f"the listing was still returning repositories after {MAX_OWNER_PAGES} pages, so it was refused instead of cut")
++        raise RuntimeError(f"INCOMPLETE: still returning repositories after {MAX_OWNER_PAGES} pages")
+ 
++    @staticmethod
++    def _confirmed_not_org(e: BaseException) -> bool:
++        """Only a clear "no such organisation" answer lets a bare name be tried as a user. Auth, permission, rate-limit, network and server errors do not."""
++        t = err_text(e, 400).lower()
++        if any(k in t for k in ("401", "403", "forbidden", "unauthor", "permission", "scope", "saml", "rate limit", "timeout", "timed out", "connection", "429", "500", "502", "503", "504", "incomplete")):
++            return False
++        return "404" in t or "not found" in t
++
+     async def _expand_repos(self, out: dict, log: ToolLog) -> bool:
+-        """owner/repo entries stay as they are; a bare name is tried as an organisation, then as a user. The expanded list replaces self.repos."""
++        """owner/repo entries stay as they are; a bare name is listed as an organisation, and only if that is confirmed not to be one, as a user. The expanded list replaces self.repos."""
+         expanded: list[str] = []
+         have: set[str] = set()
+         ok = True
+@@ -243,27 +260,40 @@
+                     have.add(entry.lower())
+                     expanded.append(entry)
+                 continue
+-            errors: list[str] = []
+             found: list[str] = []
+-            for tool, args in (("github.list_organization_repositories", {"org": entry}), ("github.list_repositories_for_a_user", {"username": entry})):
+-                if tool not in self.has:
+-                    errors.append(f"{tool} is not available in this run")
+-                    continue
++            public_only = False
++            error = ""
++            if "github.list_organization_repositories" not in self.has:
++                error = "github.list_organization_repositories is not available in this run"
++            else:
+                 try:
+-                    found = await self._owner_repos(tool, args, log)
++                    found = await self._owner_repos("github.list_organization_repositories", {"org": entry}, log)
++                    if not found:
++                        error = f"{entry!r} is an organisation the connected account can see, but it lists no repositories"
+                 except Exception as e:  # noqa: BLE001
+-                    errors.append(f"{tool}: {err_text(e, 120)}")
+-                    continue
+-                if found:
+-                    break
++                    if self._confirmed_not_org(e):
++                        if "github.list_repositories_for_a_user" not in self.has:
++                            error = f"{entry!r} is not an organisation and github.list_repositories_for_a_user is not available in this run"
++                        else:
++                            try:
++                                found, public_only = await self._owner_repos("github.list_repositories_for_a_user", {"username": entry}, log), True
++                                if not found:
++                                    error = f"{entry!r} is a user with no public repositories"
++                            except Exception as e2:  # noqa: BLE001
++                                error = f"{entry!r} is not an organisation, and listing it as a user failed: {err_text(e2, 160)}"
++                    else:
++                        error = f"listing {entry!r} as an organisation failed (not treated as 'not an organisation'): {err_text(e, 200)}"
+             if not found:
+-                out["failed"].append({"source": f"github-owner:{entry}", "error": f"{entry!r} is not an organisation or user whose repositories the connected GitHub account can list ({'; '.join(errors) or 'no repositories found'}). Use owner/repo to name a repository."})
++                out["failed"].append({"source": f"github-owner:{entry}", "error": error + ". No repository of it was read. Use owner/repo to name a repository."})
+                 ok = False
+                 continue
+             added = [r for r in found if r.lower() not in have]
+             have |= {r.lower() for r in added}
+             expanded += added
+-            out.setdefault("info", []).append(f"{entry!r} was expanded to {len(found)} repositories ({len(added)} not already listed)")
++            out.setdefault("info", []).append(
++                f"{entry!r} was expanded to {len(found)} repositories ({len(added)} not already listed)"
++                + (": this is the user's PUBLIC repositories only (the user listing tool lists public repositories), so private repositories are not covered - name them as owner/repo" if public_only
++                   else ", as far as the connected account can list them (completeness for private repositories is not claimed)"))
+         self.repos = expanded
+         return ok
+ 
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/src/store.py uc10-audit/src/store.py
+--- /tmp/round2_base/src/store.py	2026-10-13 18:09:04
++++ uc10-audit/src/store.py	2026-10-13 18:24:35
+@@ -132,6 +132,8 @@
+                           "cards": by_key.get("cards", {}).get("c", []), "dverdicts": by_key.get("dverdicts", {}).get("d", {})}
+         if by_key.get("framework", {}).get("f"):
+             p["framework"] = by_key["framework"]["f"]
++        if by_key.get("mapping", {}).get("m"):
++            p["mapping"] = by_key["mapping"]["m"]
+         if marker.get("n_items", 0) and not items:  # marker says there was history, the store is empty: do not pretend
+             p.update(backfill_done=False, last_run="", items=[], _store_empty=True)
+         return p
+@@ -139,6 +141,9 @@
+     async def asave_framework(self, cache: dict[str, Any]) -> None:
+         await self.store.aput(self.NS, "framework", {"f": cache})
+ 
++    async def asave_mapping(self, cache: dict[str, Any]) -> None:
++        await self.store.aput(self.NS, "mapping", {"m": cache})
++
+     async def adump(self, profile: dict[str, Any]) -> dict[str, Any]:
+         rows = profile.get("items", [])
+         chunks = [rows[i : i + self.CHUNK] for i in range(0, len(rows), self.CHUNK)]
+@@ -154,6 +159,8 @@
+         await self.store.aput(self.NS, "dverdicts", {"d": profile.get("dverdicts", {})})  # saved decision wording
+         if profile.get("framework"):
+             await self.store.aput(self.NS, "framework", {"f": profile["framework"]})  # prose framework -> expectations, by hash
++        if profile.get("mapping"):
++            await self.store.aput(self.NS, "mapping", {"m": profile["mapping"]})  # which evidence shows which expectation, by item content
+         marker = {k: profile[k] for k in ("cursors", "last_run", "backfill_done", "gaps") if k in profile}
+         marker.update(schema=SCHEMA, n_items=len(rows))
+         return {"marker": marker}
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/tests/test_core.py uc10-audit/tests/test_core.py
+--- /tmp/round2_base/tests/test_core.py	2026-10-10 14:25:39
++++ uc10-audit/tests/test_core.py	2026-10-13 18:24:46
+@@ -5,7 +5,7 @@
+ import linking
+ import metrics
+ from guards import ToolLog, Statement, cap_role, keep_cited, drop_colleague_assessments, scrub, internal_terms, flag_confidential, confidential_ids, FLAG, predicts_promotion
+-from ladder import parse_framework, map_evidence, statuses
++from ladder import parse_framework, statuses
+ from pipeline import Config, ingest
+ from weekly import new_items, id_key
+ import ledger
+@@ -128,10 +128,13 @@
+     nxt = [e for e in exps if e.level == "next"]
+     assert len(nxt) == 8
+     known = {i.id for i in res.items}
+-    ev = {e.id: map_evidence(e, res.items) for e in nxt}
++    pool = [i.id for i in res.items if i.type == "pr"]
++    ev = {nxt[0].id: pool[:5], nxt[1].id: pool[5:6], nxt[2].id: ["not-a-real-id", pool[0], pool[0]]}  # backed, thin, one real item + a fabricated id + a duplicate
+     rows = {r["expectation"]: r for r in statuses(nxt, ev, known)}
+-    # deterministic baseline only; model mapping is checked separately
+-    assert rows["Leads a cross-team technical decision"]["status"] in {"missing", "thin"}
++    assert rows[nxt[0].text]["status"] == "backed" and rows[nxt[1].text]["status"] == "thin" and rows[nxt[2].text] ["status"] == "thin" and rows[nxt[2].text]["count"] == 1
++    assert rows[nxt[3].text]["status"] == "missing"                       # nothing was mapped to it
++    assert {r["status"] for r in statuses(nxt, {}, known, incomplete=True)} == {"unavailable"}   # an incomplete mapping is never "missing"
++    assert statuses(nxt[:1], {nxt[0].id: pool[:3]}, known, incomplete=True)[0]["status"] == "backed"  # three real items stay backed
+ 
+ 
+ def test_every_statement_needs_known_evidence():
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/tests/test_fixes2.py uc10-audit/tests/test_fixes2.py
+--- /tmp/round2_base/tests/test_fixes2.py	2026-10-13 17:09:03
++++ uc10-audit/tests/test_fixes2.py	2026-10-13 18:24:46
+@@ -424,24 +424,10 @@
+     assert first_person("We will use BM25.") == "We will use BM25."
+ 
+ 
+-def test_design_doc_expectation_ignores_non_design_docs():
+-    from ladder import Expectation, map_evidence
+-    from models import Item
+-    d = Item(id="d1", source="doc", type="doc", date="2026-10-10T00:00:00Z", title="Design: Search ranking approach", text="x", meta={"mine": True})
+-    r = Item(id="d2", source="doc", type="doc", date="2026-10-10T00:00:00Z", title="Payout incident review", text="x", meta={"mine": True})
+-    assert map_evidence(Expectation("E1", "next", "Writes clear design docs"), [d, r]) == ["d1"]
+-
+-
+ def test_decision_voice_covers_imperative_and_proposes_forms():
+     from guards import decision_voice
+     assert decision_voice("Use BM25 with a recency boost.") == "We will use BM25 with a recency boost."
+     assert decision_voice("Proposes: move webhooks to a queue.") == "We propose to move webhooks to a queue."
+     assert decision_voice("We will keep cron.") == "We will keep cron."
+ 
+-
+-def test_help_given_threads_count_toward_mentoring_expectation():
+-    from ladder import Expectation, map_evidence
+-    from models import Item
+-    t = [Item(id=f"t{n}", source="slack", type="thread", date="2026-10-10T00:00:00Z", title="q", text="x", meta={"label": lab}) for n, lab in ((1, "mentoring"), (2, "help_given"), (3, "problem_solved"))]
+-    assert map_evidence(Expectation("E1", "next", "Mentors junior engineers"), t) == ["t1", "t2"]
+ 
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/tests/test_graph.py uc10-audit/tests/test_graph.py
+--- /tmp/round2_base/tests/test_graph.py	2026-10-13 18:06:17
++++ uc10-audit/tests/test_graph.py	2026-10-13 18:24:46
+@@ -38,7 +38,7 @@
+     text = str(c)
+     assert "Globex" not in text.split("Interview stories")[0] or True
+     assert r["stats"]["prs_reverted"] == 6
+-    assert any(g["status"] == "missing" for g in r["evidence_gaps"]) or any(g["status"] == "thin" for g in r["evidence_gaps"])
++    assert r["evidence_gaps"] and all(g["status"] == "unavailable" for g in r["evidence_gaps"])  # no model in this test: unavailable, never "missing"
+     assert r["invisible_work"] >= 8 and r["decisions"] >= 3
+     assert "tests" in " ".join(r["improvement_areas"]).lower()
+ 
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/tests/test_round2.py uc10-audit/tests/test_round2.py
+--- /tmp/round2_base/tests/test_round2.py	2026-10-13 18:14:42
++++ uc10-audit/tests/test_round2.py	2026-10-13 18:27:45
+@@ -109,17 +109,32 @@
+     assert calls == {"identity": 0, "source": 0, "model": 0} and memory == before
+ 
+ 
+-@pytest.mark.parametrize("months", [1, "6", "24", 600, "1200", 10 ** 12])
+-def test_any_positive_whole_number_of_months_is_accepted(months):
++@pytest.mark.parametrize("months", [1, "6", "24", 600, "1200", 24000])
++def test_any_representable_positive_month_count_is_accepted_and_never_shortened(months):
+     calls = []
+     out = run({"backfill_months": months}, source=Src(calls=calls))
+     assert out["result"]["status"] == "completed" and len(calls) == 1
+-    if months in (1200, 10 ** 12):  # reaches back past 1970: said, not hidden
+-        assert calls[0].startswith("1970-01-01") and "before 1970" in " ".join(out["result"]["notes"])
+-    if months == 600:
+-        assert calls[0] < "1980"
++    expected = (NOW - timedelta(days=30 * int(months))).strftime("%Y-%m-%d") if int(months) < 24000 else None
++    if expected:
++        assert calls[0].startswith(expected), (calls[0], expected)  # the window asked for is the window read: 1200 months is 1926, not 1970
++    assert "1970" not in " ".join(out["result"]["notes"])
+ 
+ 
++def test_an_unrepresentable_month_count_is_refused_before_any_call():
++    calls = {"identity": 0, "source": 0}
++
++    async def ident():
++        calls["identity"] += 1
++        return {"login": "x"}
++    most = (NOW - datetime(1, 1, 1, tzinfo=timezone.utc)).days // 30
++    assert run({"backfill_months": most}, source=Src())["result"]["status"] == "completed"       # the largest representable request still works
++    for months in (most + 1, 10 ** 12):
++        deps = agent.Deps(lambda cfg: calls.__setitem__("source", calls["source"] + 1) or Src(), llm=None, now=lambda: NOW, identity=ident)
++        with pytest.raises(ValueError, match="earliest date"):
++            asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {**BASE, "github_username": "", "backfill_months": months}, "memory": {}}))
++    assert calls == {"identity": 0, "source": 0}
++
++
+ @pytest.mark.parametrize("months", [0, -1, "0", "-4", 2.5, "2.5", "six", True])
+ def test_other_month_values_are_rejected(months):
+     with pytest.raises(ValueError, match="backfill_months"):
+@@ -194,10 +209,10 @@
+     assert out["blocked"] and "nobody" in str(out["failed"]) and not any(n == "github.search_issues" for n, _ in calls)
+ 
+ 
+-def test_a_tool_that_ignores_the_page_argument_cannot_loop_forever():
++def test_a_tool_that_ignores_the_page_argument_blocks_as_incomplete():
+     call, calls = make_owner_call({}, repeat=True)
+-    src, _ = fetch_with(call, ["acme"])
+-    assert src.repos == ["acme/same"] and len([1 for n, _ in calls if n == "github.list_organization_repositories"]) == 2
++    src, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and "INCOMPLETE" in str(out["failed"]) and not any(n == "github.search_issues" for n, _ in calls)
+ 
+ 
+ # ------------------------------------------------------------------ 3. dedup
+@@ -283,21 +298,33 @@
+ 
+ 
+ class FrameworkLLM:
+-    """Answers only the framework-extraction question; every other model question fails fast (the code falls back to rules)."""
+-    def __init__(self, exps=None, fail=False):
+-        self.n, self.fail = 0, fail
+-        self.exps = exps if exps is not None else [("deliver features independently", "current"), ("review peers' code carefully", "current"),
+-                                                   ("lead a cross-team technical decision", "next"), ("mentor other engineers", "next"), ("run the quarterly offsite", "next")]
++    """Answers the framework-extraction and evidence-mapping questions; everything else fails fast (the code falls back to rules). `mapper` picks the items."""
++    def __init__(self, exps=None, fail=False, mapper=None, fail_mapping=False):
++        self.n, self.n_map, self.fail, self.fail_mapping = 0, 0, fail, fail_mapping
++        self.mapper = mapper or (lambda exp, items: [i["item_id"] for i in items if i["type"] == "pr"][:3] if "deliver" in exp["expectation"] else [])
++        self.exps = exps if exps is not None else [
++            ("deliver features independently", "current", "deliver features independently"),
++            ("review peers' code carefully", "current", "review peers' code carefully"),
++            ("lead a cross-team technical decision", "next", "lead a cross-team technical decision"),
++            ("mentor other engineers", "next", "mentor other engineers"),
++            ("run the quarterly offsite", "next", "organise the quarterly offsite for the whole company")]  # the last quote is not in the framework: invented
+ 
+     async def structured(self, schema, system, payload, budget=None):
+-        if schema is not ExtractedFramework:
+-            raise RuntimeError("not under test")
+-        if budget is not None:
+-            budget.spend()
+-        self.n += 1
+-        if self.fail:
+-            raise RuntimeError("model unavailable")
+-        return ExtractedFramework(expectations=[ExtractedExpectation(text=t, level=lv) for t, lv in self.exps])
++        if schema is ExtractedFramework:
++            if budget is not None:
++                budget.spend()
++            self.n += 1
++            if self.fail:
++                raise RuntimeError("model unavailable")
++            return ExtractedFramework(expectations=[ExtractedExpectation(text=t, level=lv, source_quote=q) for t, lv, q in self.exps])
++        if schema is ladder.EvidenceMap:
++            if budget is not None:
++                budget.spend()
++            self.n_map += 1
++            if self.fail_mapping:
++                raise RuntimeError("model unavailable")
++            return ladder.EvidenceMap(picks=[ladder.ExpectationPick(expectation_id=e["expectation_id"], item_ids=self.mapper(e, payload["items"])) for e in payload["expectations"]])
++        raise RuntimeError("not under test")
+ 
+ 
+ def fx_run(extra, memory, llm, now=None):
+@@ -319,20 +346,23 @@
+ def test_bulleted_framework_needs_no_model():
+     llm = FrameworkLLM()
+     out = fx_run({"review_framework": "Level: Software Engineer II\n- Delivers features independently\n- Reviews peers code"}, {}, llm)
+-    assert llm.n == 0 and len(out["result"]["evidence_gaps"]) == 2
++    assert llm.n == 0 and llm.n_map >= 1 and len(out["result"]["evidence_gaps"]) == 2   # bullets need no extraction; the evidence is still chosen by the model
+ 
+ 
+ def test_prose_framework_is_extracted_by_the_model_grounded_cached_and_mapped():
+     llm = FrameworkLLM()
+     first = fx_run({"review_framework": PROSE}, {}, llm)
+     gaps = first["result"]["evidence_gaps"]
+-    assert llm.n == 1 and len(gaps) == 4 and not any("offsite" in str(g) for g in gaps)  # the ungrounded line was dropped
+-    assert {g["status"] for g in gaps} <= {"backed", "thin", "missing"} and any(g["status"] != "missing" for g in gaps)
++    assert llm.n == 1 and len(gaps) == 4 and not any("offsite" in str(g) for g in gaps)  # the line whose quote is not in the framework was dropped
++    assert {g["status"] for g in gaps} == {"backed", "missing"} and "1 extracted line(s) had no quote" in " ".join(first["result"]["notes"])
+     from store import unpack
+     cache = unpack(first["memory"]["profile"])["framework"]
+-    assert len(cache["exps"]) == 4 and cache["hash"] == ladder.framework_hash(PROSE, "Software Engineer II")
++    assert len(cache["exps"]) == 4 and cache["hash"] == ladder.framework_hash(PROSE, "Software Engineer II") and all(e["quote"] for e in cache["exps"])
++    assert unpack(first["memory"]["profile"])["mapping"]["items"]  # the evidence mapping is saved with the item content it was made from
+     second = fx_run({"review_framework": PROSE, "request": "auto"}, first["memory"], llm, now=fixtures.START + timedelta(days=190))
+-    assert llm.n == 1 and "reused from the saved extraction" in " ".join(second["result"]["notes"])  # cache hit: no second model call
++    n_map_before = first_calls = llm.n_map
++    assert llm.n == 1 and "reused from the saved extraction" in " ".join(second["result"]["notes"])  # cache hit: no second extraction call
++    assert "reused from the saved mapping" in " ".join(second["result"]["notes"])                 # only new or changed evidence went back to the model
+     changed = fx_run({"review_framework": PROSE + " You also own on-call quality.", "request": "auto"}, first["memory"], llm, now=fixtures.START + timedelta(days=190))
+     assert llm.n == 2  # a changed framework is read again
+ 
+@@ -340,7 +370,7 @@
+ def test_unparseable_and_failed_frameworks_are_not_silent_and_differ_from_absent():
+     unparsed = fx_run({"review_framework": PROSE}, {}, None)
+     failed = fx_run({"review_framework": PROSE}, {}, FrameworkLLM(fail=True))
+-    empty = fx_run({"review_framework": PROSE}, {}, FrameworkLLM(exps=[("nothing in the text at all", "next")]))
++    empty = fx_run({"review_framework": PROSE}, {}, FrameworkLLM(exps=[("nothing in the text at all", "next", "nothing in the text at all")]))
+     absent = fx_run({"review_framework": ""}, {}, None)
+     md = {k: outputs.to_markdown(v["corpus"]) for k, v in dict(unparsed=unparsed, failed=failed, empty=empty, absent=absent).items()}
+     assert outputs._FRAMEWORK_MSG["unparsed"] in md["unparsed"] and outputs._FRAMEWORK_MSG["failed"] in md["failed"] and outputs._FRAMEWORK_MSG["failed"] in md["empty"]
+@@ -354,7 +384,7 @@
+         async def structured(self, schema, system, payload, budget=None):
+             budget.spend()
+             raise AssertionError("must not be reached")
+-    exps, why = asyncio.run(ladder.extract_with_model(L(), Budget(max_calls=0, max_seconds=100), PROSE, "SE II"))
++    exps, why, _ = asyncio.run(ladder.extract_with_model(L(), Budget(max_calls=0, max_seconds=100), PROSE, "SE II"))
+     assert exps == [] and "limit" in why
+ 
+ 
+@@ -374,8 +404,18 @@
+     assert llm.n == 1 and len(out["result"]["evidence_gaps"]) == 4 and out.get("memory") in (None, {}, marker) or out["memory"] == marker
+     saved = asyncio.run(store.aget(PlatformStore.NS, "framework"))
+     assert saved is not None and saved.value["f"]["hash"] == ladder.framework_hash(PROSE, "Software Engineer II")
+-    again = asyncio.run(agent.make_graph(deps2).ainvoke({"inputs": {**inp, "request": "evidence_gaps", "review_framework": PROSE}, "memory": first["memory"]}))
+-    assert llm.n == 1 and len(again["result"]["evidence_gaps"]) == 4  # second request: from the saved extraction
++    assert asyncio.run(store.aget(PlatformStore.NS, "mapping")) is not None
++    req = {"inputs": {**inp, "request": "evidence_gaps", "review_framework": PROSE}, "memory": first["memory"]}
++    again = asyncio.run(agent.make_graph(deps2).ainvoke(req))
++    assert llm.n == 1 and "reused from the saved mapping" in " ".join(again["result"]["notes"])        # extraction and the first answers come from the saved copies
++    for _ in range(4):  # a cold on-demand request has a small share of the model budget, so a big evidence set is mapped over a few requests
++        if not any(g["status"] == "unavailable" for g in again["result"]["evidence_gaps"]):
++            break
++        again = asyncio.run(agent.make_graph(deps2).ainvoke(req))
++    assert not any(g["status"] == "unavailable" for g in again["result"]["evidence_gaps"]) and len(again["result"]["evidence_gaps"]) == 4
++    mapped = llm.n_map
++    asyncio.run(agent.make_graph(deps2).ainvoke(req))
++    assert llm.n == 1 and llm.n_map == mapped          # fully mapped and saved: no further model call at all
+ 
+ 
+ # ------------------------------------------------------------------ 7. confidential
+diff -ruN --exclude=.venv --exclude=.gravity --exclude=audit --exclude=build --exclude=__pycache__ --exclude=.pytest_cache --exclude=requirements.lock --exclude=.DS_Store /tmp/round2_base/tests/test_round3.py uc10-audit/tests/test_round3.py
+--- /tmp/round2_base/tests/test_round3.py	1970-01-01 05:30:00
++++ uc10-audit/tests/test_round3.py	2026-10-13 18:29:42
+@@ -0,0 +1,365 @@
++"""Round-3 regression tests (LOCAL mocks only; schema-faithful for the GitHub listing tools; none of it is the official samples/UC-10 acceptance)."""
++import asyncio
++from datetime import datetime, timedelta, timezone
++
++import pytest
++
++import agent
++import ladder
++from guards import Budget, BudgetExceeded, ToolLog
++from ladder import (EvidenceMap, ExpectationPick, ExtractedExpectation, ExtractedFramework, Expectation, extract_with_model, map_evidence_with_model, statuses)
++from models import Item
++from sources import GatewaySource
++
++NOW = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
++
++
++def item(n, title="Add retry to payouts", text="", type_="pr", **meta):
++    return Item(id=f"i{n}", source="github", type=type_, date=f"2026-09-{1 + n % 28:02d}T10:00:00Z", title=title, text=text or f"body {n}", url=f"https://x/{n}", meta={"mine": True, **meta})
++
++
++EXPS = [Expectation("E1", "current", "Delivers features independently"), Expectation("E2", "next", "Leads a cross-team technical decision"), Expectation("E3", "next", "Mentors other engineers")]
++
++
++class Mapper:
++    """A model that answers with whatever `rule(expectation, items)` returns, and records every request it was asked."""
++    def __init__(self, rule, fail_on=()):
++        self.rule, self.calls, self.fail_on = rule, [], set(fail_on)
++
++    async def structured(self, schema, system, payload, budget=None):
++        assert schema is EvidenceMap
++        if budget is not None:
++            budget.spend()
++        self.calls.append(payload)
++        if len(self.calls) in self.fail_on:
++            raise RuntimeError("model unavailable")
++        return EvidenceMap(picks=[ExpectationPick(expectation_id=e["expectation_id"], item_ids=self.rule(e, payload["items"])) for e in payload["expectations"]])
++
++
++def mapping(llm, items, cache=None, exps=EXPS, budget=None):
++    return asyncio.run(map_evidence_with_model(llm, budget or Budget(max_calls=150, max_seconds=600), exps, items, cache))
++
++
++# ------------------------------------------------------------------------------------------- 1. evidence mapping by the model
++def test_ids_are_validated_deduplicated_and_counted_by_code():
++    items = [item(n) for n in range(6)]
++
++    def rule(exp, shown):
++        if exp["expectation_id"] == "E1":
++            return ["i0", "i1", "i2", "i0", "i1", "FAKE-ID"]            # three real, two duplicates, one fabricated
++        if exp["expectation_id"] == "E2":
++            return ["i3", "i4", "not-in-this-request"]                    # two real, one fabricated
++        return []
++    r = mapping(Mapper(rule), items)
++    rows = {g["id"]: g for g in statuses(EXPS, r.evidence, {i.id for i in items}, r.incomplete)}
++    assert rows["E1"]["status"] == "backed" and rows["E1"]["count"] == 3 and len(set(rows["E1"]["evidence"])) == 3
++    assert rows["E2"]["status"] == "thin" and rows["E2"]["count"] == 2
++    assert rows["E3"]["status"] == "missing" and rows["E3"]["count"] == 0
++    assert r.rejected == 2 and any("not real evidence ids" in x for x in r.reasons) and not r.incomplete
++
++
++def test_a_fabricated_expectation_id_is_ignored():
++    class L(Mapper):
++        async def structured(self, schema, system, payload, budget=None):
++            budget.spend()
++            return EvidenceMap(picks=[ExpectationPick(expectation_id="E99", item_ids=["i0"]), ExpectationPick(expectation_id="E1", item_ids=["i0"])])
++    r = mapping(L(lambda *a: []), [item(0)])
++    assert set(r.evidence) == {"E1", "E2", "E3"} and r.evidence["E1"] == ["i0"] and r.rejected == 1
++
++
++def test_an_id_from_another_request_does_not_count():
++    items = [item(n) for n in range(ladder.MAP_BATCH + 5)]            # two requests
++    first_ids = {}
++
++    def rule(exp, shown):
++        first_ids.setdefault(len(first_ids), shown[0]["item_id"])
++        return ["i0"] if exp["expectation_id"] == "E1" else []        # i0 exists, but only one of the requests showed it
++    r = mapping(Mapper(rule), items)
++    assert r.evidence["E1"] == ["i0"] and r.rejected == 1
++
++
++def test_the_model_sees_real_evidence_text_and_the_choice_is_not_keyword_matching():
++    misleading = item(0, title="Delivers features independently", text="renamed a variable")                 # shares the expectation's words, shows nothing
++    real = item(1, title="PAY-9 retry storm", text="I ran the incident call, wrote the fix and shipped it end to end without help")  # shares none of its words
++    llm = Mapper(lambda e, shown: ["i1"] if e["expectation_id"] == "E1" else [])
++    r = mapping(llm, [misleading, real])
++    sent = {i["item_id"]: i for i in llm.calls[0]["items"]}
++    assert "I ran the incident call" in sent["i1"]["text"] and sent["i1"]["title"] == "PAY-9 retry storm"
++    assert r.evidence["E1"] == ["i1"]                                                                         # chosen by the model on its text, not by shared words
++
++
++def test_only_the_users_countable_work_is_sent():
++    items = [item(0), item(1, reverted=True), item(2, is_revert=True), item(3, generated_only=True), item(4, mine=False, type_="ticket"), item(5, title="Initial commit", type_="commit"),
++             item(6, mine=False, type_="review")]
++    items[4].meta["mine"] = False
++    llm = Mapper(lambda e, shown: [])
++    mapping(llm, items)
++    assert {i["item_id"] for i in llm.calls[0]["items"]} == {"i0", "i6"}   # a review of someone else's PR is the user's own evidence; reverts, lockfile PRs, trivial commits and others' items are not
++
++
++# ----- failure is "unavailable", never "missing"
++def test_no_model_means_unavailable_not_missing():
++    items = [item(n) for n in range(4)]
++    r = mapping(None, items)
++    rows = statuses(EXPS, r.evidence, {i.id for i in items}, r.incomplete)
++    assert r.incomplete and {g["status"] for g in rows} == {"unavailable"} and "no model" in " ".join(r.reasons)
++
++
++def test_model_error_and_budget_exhaustion_are_unavailable_with_a_reason():
++    items = [item(n) for n in range(4)]
++    bad = mapping(Mapper(lambda *a: [], fail_on={1}), items)
++    assert bad.incomplete and "failed" in " ".join(bad.reasons) and {g["status"] for g in statuses(EXPS, bad.evidence, {i.id for i in items}, True)} == {"unavailable"}
++    out = mapping(Mapper(lambda *a: ["i0"]), items, budget=Budget(max_calls=0, max_seconds=100))
++    assert out.incomplete and out.new_calls == 0 and "no model" not in " ".join(out.reasons)
++    assert {g["status"] for g in statuses(EXPS, out.evidence, {i.id for i in items}, True)} == {"unavailable"}
++
++
++def test_partial_mapping_keeps_proven_backed_and_marks_the_rest_unavailable():
++    items = [item(n) for n in range(ladder.MAP_BATCH * 2)]
++    llm = Mapper(lambda e, shown: [i["item_id"] for i in shown][:3] if e["expectation_id"] == "E1" else [], fail_on={2})   # the second request fails
++    r = mapping(llm, items)
++    rows = {g["id"]: g["status"] for g in statuses(EXPS, r.evidence, {i.id for i in items}, r.incomplete)}
++    assert r.incomplete and rows == {"E1": "backed", "E2": "unavailable", "E3": "unavailable"}
++
++
++# ----- budget
++def test_mapping_stays_inside_the_runs_model_budget():
++    items = [item(n) for n in range(ladder.MAP_BATCH * 5)]
++    b = Budget(max_calls=7, max_seconds=100)               # 7 - reserve 4 = 3 requests may be spent on mapping
++    llm = Mapper(lambda *a: [])
++    r = mapping(llm, items, budget=b)
++    assert len(llm.calls) == 3 and b.calls == 3 <= b.max_calls and r.incomplete and "mapped on the next run" in " ".join(r.reasons)
++
++
++# ----- cache and invalidation
++def test_cache_is_reused_and_invalidated_by_framework_or_evidence_changes():
++    items = [item(n) for n in range(5)]
++    rule = lambda e, shown: [i["item_id"] for i in shown][:3] if e["expectation_id"] == "E1" else []
++    first_llm = Mapper(rule)
++    first = mapping(first_llm, items)
++    assert len(first_llm.calls) == 1
++    again = Mapper(rule)
++    same = mapping(again, items, cache=first.cache)
++    assert again.calls == [] and same.reused == 5 and same.evidence == first.evidence and not same.incomplete          # nothing changed: no model call
++    changed = [*items[:4], item(4, text="rewritten body that now shows something else")]
++    l2 = Mapper(rule)
++    mapping(l2, changed, cache=first.cache)
++    assert [i["item_id"] for i in l2.calls[0]["items"]] == ["i4"]                                                    # only the changed item goes back
++    grown = [*items, item(5)]
++    l3 = Mapper(rule)
++    mapping(l3, grown, cache=first.cache)
++    assert [i["item_id"] for i in l3.calls[0]["items"]] == ["i5"]                                                    # only the new item
++    shrunk = mapping(Mapper(rule), items[:3], cache=first.cache)
++    assert all(i in {"i0", "i1", "i2"} for ids in shrunk.evidence.values() for i in ids)                              # an item that is gone no longer counts
++    l4 = Mapper(rule)
++    mapping(l4, items, cache=first.cache, exps=[*EXPS[:2], Expectation("E3", "next", "Mentors other engineers through pairing")])
++    assert len(l4.calls[0]["items"]) == 5                                                                            # the framework changed: everything is asked again
++
++
++# ------------------------------------------------------------------------------------------- 2. extraction grounded by a quote
++FRAMEWORK = ("At Software Engineer II you are expected to ship features without supervision and to give careful code review. "
++             "To reach Senior Software Engineer you should lead a cross-team technical decision and coach other engineers.")
++
++
++class Extractor:
++    def __init__(self, lines, fail=False):
++        self.lines, self.fail, self.n = lines, fail, 0
++
++    async def structured(self, schema, system, payload, budget=None):
++        assert schema is ExtractedFramework
++        budget.spend()
++        self.n += 1
++        if self.fail:
++            raise RuntimeError("model unavailable")
++        return ExtractedFramework(expectations=[ExtractedExpectation(text=t, level=lv, source_quote=q) for t, lv, q in self.lines])
++
++
++def extract(llm, text=FRAMEWORK, budget=None):
++    return asyncio.run(extract_with_model(llm, budget or Budget(max_calls=10, max_seconds=100), text, "Software Engineer II"))
++
++
++def test_supported_paraphrases_are_accepted_with_their_quote_and_level():
++    exps, why, rejected = extract(Extractor([
++        ("Delivers work independently", "current", "ship features without supervision"),                     # paraphrase of the quoted passage
++        ("Reviews code carefully", "current", "give careful   CODE review"),                                  # whitespace and case differences in the quote are ignored
++        ("Leads cross-team technical decisions", "next", "lead a cross-team technical decision"),
++        ("Coaches engineers", "next", "coach other engineers")]))
++    assert [(e.level, e.text) for e in exps] == [("current", "Delivers work independently"), ("current", "Reviews code carefully"),
++                                                 ("next", "Leads cross-team technical decisions"), ("next", "Coaches engineers")]
++    assert exps[0].quote == "ship features without supervision" and rejected == 0 and why == ""
++
++
++def test_invented_expectations_are_rejected_even_when_their_words_overlap_the_framework():
++    exps, why, rejected = extract(Extractor([
++        ("Delivers work independently", "current", "ship features without supervision"),
++        ("Leads technical decisions across the company and the board", "next", "lead technical decisions across the company"),   # words overlap, no such passage
++        ("Runs the quarterly offsite", "next", "organise the quarterly offsite"),
++        ("Mentors", "next", "coach"),                                                                           # a single word is not a passage
++        ("Anything", "next", "")]))
++    assert [e.text for e in exps] == ["Delivers work independently"] and rejected == 4
++
++
++def test_no_grounded_expectation_is_an_explicit_failure_and_a_model_error_is_reported():
++    exps, why, rejected = extract(Extractor([("Invented", "next", "this sentence is not in the framework")]))
++    assert exps == [] and "no expectation whose source quote appears" in why and rejected == 1
++    exps, why, _ = extract(Extractor([], fail=True))
++    assert exps == [] and "model call failed" in why
++    exps, why, _ = extract(Extractor([]), budget=Budget(max_calls=0, max_seconds=100))
++    assert exps == [] and "limit" in why
++
++
++def test_long_frameworks_are_read_in_parts_and_a_quote_from_any_part_is_valid():
++    long = ("Intro text. " * 1200) + " To reach Senior you should lead a cross-team technical decision. " + ("More text. " * 2000)
++    assert len(long) > ladder.WINDOW * 2
++    llm = Extractor([("Leads cross-team decisions", "next", "lead a cross-team technical decision")])
++    exps, why, _ = extract(llm, long)
++    assert len(exps) == 1 and llm.n >= 2                       # every part was read; the quote is checked against the whole framework
++    too_long = "x " * (ladder.WINDOW * (ladder.MAX_WINDOWS + 1) // 2)
++    _, why, _ = extract(Extractor([("A b", "next", "x x")]), too_long)
++    assert "were not read" in why
++
++
++# ------------------------------------------------------------------------------------------- 3. GitHub owner listing (schema-faithful mocks)
++class GitHubListing:
++    """Mirrors the two tool schemas: org tool needs `org`; user tool needs `username`; both take integer `page` and `per_page` (max 100).
++    Without per_page the org tool gives 1 row and the user tool 30 (their real defaults), so a missing per_page shows up as truncation."""
++    def __init__(self, org_pages=None, user_pages=None, org_error=None, org_payload=None, repeat=False):
++        self.org_pages, self.user_pages, self.org_error, self.org_payload, self.repeat = org_pages or {}, user_pages or {}, org_error, org_payload, repeat
++        self.calls = []
++
++    async def __call__(self, name, args):
++        self.calls.append((name, dict(args)))
++        if name == "github.search_issues":
++            return {"items": []}
++        if name not in ("github.list_organization_repositories", "github.list_repositories_for_a_user"):
++            return []
++        org = name.endswith("organization_repositories")
++        required, other = ("org", "username") if org else ("username", "org")
++        assert required in args and other not in args, f"{name} needs {required!r}, got {sorted(args)}"
++        assert set(args) <= {required, "page", "per_page"}, sorted(args)
++        assert isinstance(args.get("page", 1), int) and isinstance(args.get("per_page", 1), int) and args.get("per_page", 1) <= 100
++        if org and self.org_error:
++            raise RuntimeError(self.org_error)
++        if org and self.org_payload:
++            return self.org_payload
++        page, per = args.get("page", 1), args.get("per_page", 1 if org else 30)
++        pages = self.org_pages if org else self.user_pages
++        if self.repeat:
++            return {"repositories": [{"full_name": f"{args[required]}/same-{i}"} for i in range(per)]}
++        want = pages.get(page, 0)
++        return {"repositories": [{"full_name": f"{args[required]}/r{page}-{i}"} for i in range(min(want, per))]}
++
++
++def fetch_with(call, repos, tools=("github.list_organization_repositories", "github.list_repositories_for_a_user")):
++    src = GatewaySource(call, "u", repos, [], False, [], {"github.search_issues", "github.list_commits", *tools})
++    return src, asyncio.run(src.fetch("2026-04-01T00:00:00Z", None, ToolLog()))
++
++
++def test_org_listing_sets_per_page_reads_to_the_empty_page_and_claims_no_private_completeness():
++    call = GitHubListing(org_pages={1: 100, 2: 100, 3: 37})
++    src, out = fetch_with(call, ["acme"])
++    listing = [a for n, a in call.calls if n == "github.list_organization_repositories"]
++    assert [a["page"] for a in listing] == [1, 2, 3, 4] and all(a["per_page"] == 100 and a["org"] == "acme" for a in listing)
++    assert len(src.repos) == 237 and not out.get("blocked")
++    assert not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
++    info = " ".join(out["info"])
++    assert "237" in info and "completeness for private repositories is not claimed" in info and "PUBLIC" not in info
++
++
++def test_only_a_confirmed_not_an_org_answer_falls_back_to_the_user_listing_and_discloses_public_only():
++    for err in ("404 Not Found", "HTTPError: 404 Client Error: Not Found for url"):
++        call = GitHubListing(org_error=err, user_pages={1: 30, 2: 5})
++        src, out = fetch_with(call, ["bob"])
++        users = [a for n, a in call.calls if n == "github.list_repositories_for_a_user"]
++        assert [a["page"] for a in users] == [1, 2, 3] and all(a["per_page"] == 100 and a["username"] == "bob" for a in users)
++        assert len(src.repos) == 35 and not out.get("blocked")
++        assert "PUBLIC repositories only" in " ".join(out["info"]) and "private repositories are not covered" in " ".join(out["info"])
++    call = GitHubListing(org_payload={"successful": False, "error": "Not Found"}, user_pages={1: 2})        # the error returned as data, not raised
++    src, _ = fetch_with(call, ["bob"])
++    assert len(src.repos) == 2
++
++
++@pytest.mark.parametrize("err", ["403 Forbidden: Resource not accessible by integration", "401 Unauthorized", "Bad credentials", "429 rate limit exceeded", "ConnectionError: timed out",
++                                 "503 Service Unavailable", "SAML enforcement: token not authorized", "missing scope read:org"])
++def test_auth_permission_network_errors_never_fall_back_to_a_user_listing(err):
++    call = GitHubListing(org_error=err, user_pages={1: 3})
++    src, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and "not treated as 'not an organisation'" in str(out["failed"])
++    assert not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls) and not any(n == "github.search_issues" for n, _ in call.calls)
++    call = GitHubListing(org_payload={"successful": False, "error": err}, user_pages={1: 3})
++    _, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
++
++
++def test_an_org_with_no_visible_repositories_is_reported_not_treated_as_a_user():
++    call = GitHubListing(org_pages={})
++    _, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and "lists no repositories" in str(out["failed"]) and not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
++
++
++def test_a_repeated_nonempty_page_blocks_the_run_as_incomplete():
++    call = GitHubListing(repeat=True)
++    src, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and "INCOMPLETE" in str(out["failed"]) and not any(n == "github.search_issues" for n, _ in call.calls)
++    assert src.repos == []                                                                    # no partial list is kept as if it were complete
++
++
++def test_a_listing_that_never_ends_is_incomplete(monkeypatch):
++    import sources
++    monkeypatch.setattr(sources, "MAX_OWNER_PAGES", 3)
++    call = GitHubListing(org_pages={p: 100 for p in range(1, 50)})
++    _, out = fetch_with(call, ["acme"])
++    assert out["blocked"] and "INCOMPLETE" in str(out["failed"])
++
++
++def test_explicit_repos_and_mixed_entries_are_read_without_any_listing():
++    call = GitHubListing()
++    src, out = fetch_with(call, ["acme/api", "ACME/API", "acme/web"])
++    assert src.repos == ["acme/api", "acme/web"] and not any(n in ("github.list_organization_repositories", "github.list_repositories_for_a_user") for n, _ in call.calls)
++
++
++def test_a_missing_tool_is_reported_not_guessed():
++    _, out = fetch_with(GitHubListing(), ["acme"], tools=())
++    assert out["blocked"] and "not available in this run" in str(out["failed"])
++
++
++# ------------------------------------------------------------------------------------------- 4. the requested period is never silently shortened
++class Src:
++    def __init__(self):
++        self.since = []
++
++    async def fetch(self, since, until, log):
++        self.since.append(since)
++        return {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": []}
++
++
++def run_months(months, now=NOW):
++    src = Src()
++    deps = agent.Deps(lambda cfg: src, llm=None, now=lambda: now)
++    out = asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {"github_username": "u", "repos_or_org": "o/r", "role_and_level": "SE", "backfill_months": months}, "memory": {}}))
++    return out, src
++
++
++@pytest.mark.parametrize("months", [6, 120, 1200, 12000, 13200])
++def test_every_representable_month_count_reads_exactly_that_period(months):
++    out, src = run_months(months)
++    start = NOW - timedelta(days=30 * months)
++    assert src.since == [f"{start.year:04d}-{start.month:02d}-{start.day:02d}T{start.hour:02d}:{start.minute:02d}:{start.second:02d}Z"]
++    assert "1970" not in str(out["result"]["notes"]) and out["result"]["status"] == "completed"
++
++
++def test_years_before_1000_are_zero_padded_so_the_date_stays_parseable():
++    out, src = run_months(13200)                     # 1084 years back: year 942
++    assert src.since[0].startswith("0942-") and datetime.fromisoformat(src.since[0].replace("Z", "+00:00")).year == 942
++
++
++def test_the_largest_representable_request_works_and_one_more_is_refused_before_any_call():
++    most = (NOW - datetime(1, 1, 1, tzinfo=timezone.utc)).days // 30
++    out, src = run_months(most)
++    assert src.since and src.since[0].startswith("0001-")
++    for months in (most + 1, 10 ** 9, 10 ** 15):
++        srcs = Src()
++        deps = agent.Deps(lambda cfg: srcs, llm=None, now=lambda: NOW)
++        with pytest.raises(ValueError, match="earliest date this agent can compute") as e:
++            asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {"github_username": "u", "repos_or_org": "o/r", "role_and_level": "SE", "backfill_months": months}, "memory": {}}))
++        assert srcs.since == [] and str(most) in str(e.value)

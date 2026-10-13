@@ -1,0 +1,15 @@
+__pycache__/
+.venv/
+*.pyc
+build/
+.gravity/
+requirements.lock
+.pytest_cache/
+out/
+
+# audit copy: personal data stays local
+.DS_Store
+audit/run1_*
+audit/run3_*.md
+audit/pre5.*
+audit/p.log

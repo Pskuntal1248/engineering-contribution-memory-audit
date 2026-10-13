@@ -1,0 +1,44 @@
+
+  engineering-contribution-memory@0.1.1  run grt_…G57I · 32 tools declared
+
+  ● load                                          0.0s
+  ● fetch                                         0.0s
+  ● analyse                                       2.8s
+  ● render                                        0.0s
+  ● persist                                       0.0s
+  ╭─ result ───────────────────────────────────────────────────────────────────╮
+  │ title                 Interview stories - Pskuntal1248                     │
+  │ mode                  interview_stories                                    │
+  │ stats                 {"prs_authored": 11, "prs_shipped": 5,               │
+  │ "commits_authored": 0, "prs_reverted": 2, "median_cycle_hours": 0.0,       │
+  │ "reviews_given": 0, "tickets_touched": 8, "tickets_reopened": 1,           │
+  │ "threads": 4, "docs": 4}                                                   │
+  │ projects              3                                                    │
+  │ invisible_work        3                                                    │
+  │ decisions             2                                                    │
+  │ notes                                                                      │
+  │ • topic grouping used embeddings (1 call to the Gravity endpoint) plus     │
+  │ keywords                                                                   │
+  │ • no review framework given: evidence gaps skipped; a framework would      │
+  │ enable them                                                                │
+  │ ledger_rows           30                                                   │
+  │ status                completed                                            │
+  │ model_calls           1                                                    │
+  │ seconds               2.8                                                  │
+  │ new_items             0                                                    │
+  │ docs_sources_asked                                                         │
+  │ • google drive                                                             │
+  │ docs_items_by_source  {"google drive": 5}                                  │
+  │ dm_reads              0                                                    │
+  │ page_summary          5 PRs shipped, 0 reviews, 3 pieces of invisible work │
+  │ (1 listed under Problems solved), 2 decisions. Every item below links to   │
+  │ its source.                                                                │
+  │ page_sections                                                              │
+  │ • Interview stories                                                        │
+  │ • Coverage                                                                 │
+  │ • What could not be done                                                   │
+  │ • Appendix: item ledger (also the CSV download)                            │
+  │ page_chars            4294                                                 │
+  ╰────────────────────────────────────────────────────────────────────────────╯
+
+  ✓ Done in 8.1s  

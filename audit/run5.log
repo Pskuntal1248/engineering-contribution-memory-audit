@@ -1,0 +1,28 @@
+
+  engineering-contribution-memory@0.1.1  run grt_…z9w4 · 32 tools declared
+
+  ● load                                                                   14.4s
+    ✓                                https://api.github.com/users/Pskunt…   7.4s
+github.get_the_authenticated_user                                               
+    ✓ jira.get_server_info                                                  7.0s
+  ● fetch                                                                  14.4s
+    ✓ slack.list_channels            4 found                                7.1s
+    ✓ jira.get_all_projects          5 found                                7.3s
+  ● analyse                                                                 0.0s
+  ● render                                                                  0.0s
+  ● persist                                                                 0.0s
+  ╭─ result ───────────────────────────────────────────────────────────────────╮
+  │ status         blocked                                                     │
+  │ model_calls    0                                                           │
+  │ seconds        14.4                                                        │
+  │ new_items      0                                                           │
+  │ dm_reads       0                                                           │
+  │ page_summary   Nothing was read, no model calls were made, and the saved   │
+  │ profile was left unchanged, because configured sources could not be        │
+  │ verified.                                                                  │
+  │ page_sections                                                              │
+  │ • Fix these, then rerun                                                    │
+  │ page_chars     915                                                         │
+  ╰────────────────────────────────────────────────────────────────────────────╯
+
+  ✓ Done in 34.2s  
