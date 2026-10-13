@@ -77,9 +77,9 @@ def _run(inputs, source=None, memory=None):
     return asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {"github_username": "u", "repos_or_org": "o/r", "role_and_level": "SE", **inputs}, "memory": memory or {}}))
 
 
-def test_unrecognised_ask_and_skipped_slack_are_said_out_loud():
-    notes = " ".join(_run({"ask": "what did I do on project X", "slack_channels": ""})["result"]["notes"])
-    assert "was not recognised" in notes and "Slack was not read" in notes
+def test_skipped_slack_is_said_out_loud():
+    notes = " ".join(_run({"slack_channels": ""})["result"]["notes"])
+    assert "Slack was not read" in notes
 
 
 def test_doc_keys_only_from_configured_jira_projects():

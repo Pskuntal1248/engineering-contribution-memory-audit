@@ -78,10 +78,10 @@ def test_no_framework_skips_gaps():
     assert any("framework" in n for n in out["result"]["notes"])
 
 
-def test_typed_request_in_message_input_is_understood():
+def test_typed_text_inputs_no_longer_route_anything():
     first = run(INP, {}, W1, E["week2_start"])
     out = run({**INP, "message": "interview stories"}, first["memory"], W1, E["week2_start"])
-    assert out["result"]["mode"] == "interview_stories"
+    assert out["result"]["mode"] == "weekly"                      # a "message" input is not read: the dropdown (default weekly_update) decides
 
 
 def test_weekly_update_default_backfills_then_updates_weekly():
@@ -91,12 +91,18 @@ def test_weekly_update_default_backfills_then_updates_weekly():
     assert b["result"]["mode"] == "weekly"
 
 
-def test_date_inputs_win_over_words_in_ask():
+def test_removed_ask_input_cannot_override_the_dropdown_or_the_dates():
     first = run(INP, {}, W1, E["week2_start"])
+    # the dates and the dropdown decide, whatever stale text a saved run still carries in `ask`
     out = run({**INP, "request": "review_material", "period_from": "2026-09-01", "period_to": "2026-10-31", "ask": "review material for April to September"}, first["memory"], W1, E["week2_start"])
-    assert "2026-09-01 to 2026-10-31" in out["corpus"]["sections"][0]["heading"]
+    assert out["result"]["mode"] == "review_material" and "2026-09-01 to 2026-10-31" in out["corpus"]["sections"][0]["heading"]
     words = run({**INP, "ask": "review material for April to September"}, first["memory"], W1, E["week2_start"])
-    assert words["result"]["mode"] == "review_material"
+    assert words["result"]["mode"] == "weekly"                    # the default dropdown value is not replaced by typed words
+    other = run({**INP, "request": "one_on_one", "ask": "interview stories"}, first["memory"], W1, E["week2_start"])
+    assert other["result"]["mode"] == "one_on_one"
+    undated = run({**INP, "request": "review_material", "ask": "review material for April to September"}, first["memory"], W1, E["week2_start"])
+    assert "all to now" in undated["corpus"]["sections"][0]["heading"]          # no period is inferred from words
+    assert not any("typed request" in n for r in (out, words, other, undated) for n in r["result"]["notes"])
 
 
 def test_saved_request_decides_the_mode_and_weekly_update_is_the_default():

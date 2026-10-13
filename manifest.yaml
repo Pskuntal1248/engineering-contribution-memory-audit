@@ -1,6 +1,6 @@
 contract: v1
 name: engineering-contribution-memory
-version: 0.1.1
+version: 0.1.2
 description: Reads the last 6 months of your GitHub, Jira, Slack and docs and keeps an evidence-linked engineering profile. It links shipped work into projects, shows invisible work like reviews and on-call, evidences gaps against your career ladder, and gives weekly summaries, 1:1 points, review material and interview stories on demand from the saved profile. A Friday 5 PM IST run (changeable) adds the week's new items; the timezone input sets report dates.
 kind: monitor
 
@@ -66,10 +66,6 @@ inputs:
   - name: review_framework
     type: textarea
     label: "Career ladder / review framework text (optional; enables evidence gaps)"
-    required: false
-  - name: ask
-    type: text
-    label: "Optional: type what you want, e.g. 1:1 points or interview stories (used only when What to produce is weekly_update; for review material use the two dates)"
     required: false
   - name: team_changes
     type: textarea

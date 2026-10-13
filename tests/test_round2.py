@@ -157,9 +157,22 @@ def test_semicolons_are_rejected_commas_and_newlines_work():
     assert run({"repos_or_org": "o/r\no/s, o/t"})["result"]["status"] == "completed"
 
 
-def test_unknown_ask_runs_the_weekly_update_with_a_note():
+def test_removed_ask_input_is_ignored_with_no_routing_and_no_note():
     out = run({"ask": "tell me a joke"})
-    assert out["result"]["mode"] == "backfill" and "was not recognised" in " ".join(out["result"]["notes"])
+    assert out["result"]["mode"] == "backfill" and not any("typed request" in n or "not recognised" in n for n in out["result"]["notes"])
+    assert run({"ask": "interview stories", "request": "weekly_update"})["result"]["mode"] == "backfill"
+
+
+def test_manifest_has_19_inputs_without_ask_and_keeps_the_dropdown_and_both_review_dates():
+    m = yaml.safe_load(open("manifest.yaml"))
+    names = [i["name"] for i in m["inputs"]]
+    assert len(names) == 19 and "ask" not in names and len(set(names)) == 19
+    by = {i["name"]: i for i in m["inputs"]}
+    assert by["request"]["options"] == ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"] and by["request"]["default"] == "weekly_update"
+    assert by["period_from"]["type"] == "date" and by["period_to"]["type"] == "date"
+    assert "team_changes" in names and "ask" not in open("manifest.yaml").read().replace("task", "")
+    import ask
+    assert not hasattr(ask, "parse_request") and ask.parse_team_changes("2026-07-01: Platform") == [("2026-07-01", "Platform")]
 
 
 # --- owner / bare-name expansion (mock; the live tool argument names are unverified)

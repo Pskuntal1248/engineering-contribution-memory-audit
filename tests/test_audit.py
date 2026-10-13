@@ -1,25 +1,11 @@
-"""Spec audit: typed requests, team changes, include_dms opt-in semantics."""
-from datetime import date
-
-from ask import parse_request, parse_team_changes
+"""Spec audit: team changes, include_dms opt-in semantics."""
+from ask import parse_team_changes
 from guards import ToolLog, channels_to_read
 from linking import split_by_team
 from models import Item
 
 CH = [{"id": "C1", "name": "general"}, {"id": "G1", "name": "secret", "is_private": True},
       {"id": "D1", "name": "", "user": "U77", "is_im": True}, {"id": "D2", "name": "", "user": "U88", "is_im": True}]
-TODAY = date(2026, 10, 10)
-
-
-def test_typed_requests_and_date_ranges():
-    assert parse_request("weekly summary", TODAY)[0] == "weekly_summary"
-    assert parse_request("1:1 points", TODAY)[0] == "one_on_one"
-    assert parse_request("interview stories", TODAY)[0] == "interview_stories"
-    assert parse_request("evidence gaps", TODAY)[0] == "evidence_gaps"
-    assert parse_request("review material for April to September", TODAY) == ("review_material", "2026-04-01", "2026-09-30")
-    assert parse_request("review material for November to March", TODAY) == ("review_material", "2025-11-01", "2026-03-31")
-    assert parse_request("review material 2026-01-01 to 2026-03-31", TODAY) == ("review_material", "2026-01-01", "2026-03-31")
-    assert parse_request("", TODAY) == ("", "", "")
 
 
 def test_team_change_groups_by_team_with_date():

@@ -20,7 +20,7 @@ from models import Item, day, local_date_of, local_tz
 from pipeline import Config, ingest
 from sources import GatewaySource, Source
 from store import NativeMemoryStore, PlatformStore, ProfileStore, platform_store
-from ask import parse_request, parse_team_changes
+from ask import parse_team_changes
 from inputs import backfill_since, parse_months, validate_inputs
 from weekly import new_items, next_cursors, quiet_week_line, since_for, id_key
 
@@ -134,19 +134,10 @@ def make_graph(deps: Deps):
         req = str(inp.get("request") or "auto")
         if req == "weekly_update":
             req = "auto"  # the dropdown default: the first run backfills, every later run is the weekly update (new items only)
-        said, d1, d2 = parse_request(str(inp.get("ask") or inp.get("message") or ""), local_now(inp).date())  # "message" is how a follow-up request typed under a finished run arrives
-        if said and req == "auto":
-            req = said  # the typed request wins over the dropdown's default
-        asked = str(inp.get("ask") or "").strip()
-        if asked and not said and req == "auto":
-            id_notes.append(f"the typed request {asked!r} was not recognised, so the normal update ran. Try: weekly summary, 1:1 points, review material, interview stories or evidence gaps")
         if not [c for c in parse_channels(str(inp.get("slack_channels") or ""))] and str(inp.get("include_dms") or "No").strip().lower() != "yes":
             id_notes.append("no Slack channels were listed, so Slack was not read")
         elif "*dm*" in str(inp.get("slack_channels") or "").lower() and str(inp.get("include_dms") or "No").strip().lower() != "yes":
             id_notes.append("*dm* was listed but include_dms is No, so no DM was read")
-        if not (str(inp.get("period_from") or "").strip() or str(inp.get("period_to") or "").strip()):
-            if d1 or d2:  # dates typed in words are used only when the two date inputs are empty
-                inp["period_from"], inp["period_to"] = d1, d2
         has_memory = bool(prior.get("items") or prior.get("last_run"))  # an empty but completed run still counts
         if req == "auto":
             req = "weekly" if prior.get("backfill_done") else "backfill"  # weekly only after a backfill really completed

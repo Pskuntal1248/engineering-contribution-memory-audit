@@ -39,7 +39,6 @@ RUNS = [
     ("backfill", {"backfill_months": "6"}, 1800, 150),
     ("weekly_summary", {"request": "weekly_summary"}, 300, 25),
     ("one_on_one", {"request": "one_on_one"}, 120, 10),
-    ("ask_review", {"ask": "review material for April to September"}, 120, 10),
     ("review_material", {"request": "review_material", "period_from": "2026-09-01", "period_to": "2026-10-31"}, 120, 10),
     ("interview_stories", {"request": "interview_stories"}, 120, 10),
     ("evidence_gaps", {"request": "evidence_gaps", "review_framework": LADDER}, 120, 10),
