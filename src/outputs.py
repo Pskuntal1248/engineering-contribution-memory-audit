@@ -573,12 +573,27 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                      "body": f"{len(rows)} items: " + ", ".join(f"{n} {t}{'' if n == 1 else 's'}" for t, n in _type_counts([i for i in items if i.id in new_ids] if weekly_kind else items)) + (f" (newest {LEDGER_CAP} of {len(items)})" if trunc else "")
                      + ". A PR, its commits and its ticket are separate rows for the same change. Reverts, reverted PRs, lockfile-only PRs and trivial commits are listed but not counted.",
                      **({"table": {"columns": ledger.COLUMNS, "rows": rows}} if rows else {})})
-    summary_text = f"{s['prs_shipped']} PR{'' if s['prs_shipped'] == 1 else 's'} shipped, {s['reviews_given']} review{'' if s['reviews_given'] == 1 else 's'}, {len(profile['invisible'])} piece{'' if len(profile['invisible']) == 1 else 's'} of invisible work{_inv_note(profile)}, {len(profile['decisions'])} decision{'' if len(profile['decisions']) == 1 else 's'}. Every item below links to its source."
+    from interview import proposed, ACCEPTED
+    def decision_counts(records):
+        established, proposals, unconfirmed = 0, 0, 0
+        for record in records:
+            ev = [by_id[e] for e in record["evidence"] if e in by_id]
+            if any(proposed(it) for it in ev):
+                proposals += 1
+            elif ev and any(ACCEPTED.search(it.text + " " + str(it.meta.get("dsum", ""))) or it.meta.get("decision_text") for it in ev):
+                established += 1
+            else:
+                unconfirmed += 1
+        return established, proposals, unconfirmed
+    nd, np, nu = decision_counts(profile["decisions"])
+    def decision_label(d, p, u):
+        return f"{d} established decision{'' if d == 1 else 's'}; {p} design proposal{'' if p == 1 else 's'}" + (f"; {u} design record(s) with acceptance unconfirmed" if u else "")
+    summary_text = f"{s['prs_shipped']} PR{'' if s['prs_shipped'] == 1 else 's'} shipped, {s['reviews_given']} review{'' if s['reviews_given'] == 1 else 's'}, {len(profile['invisible'])} piece{'' if len(profile['invisible']) == 1 else 's'} of invisible work{_inv_note(profile)}, {decision_label(nd, np, nu)}. Every item below links to its source."
     if weekly_kind:
         wp = sum(1 for i in _window_work(profile, by_id, new_ids) if i.type == "pr")
         wi = sum(1 for v in profile["invisible"] if any(e in new_ids for e in v["evidence"]))
-        wd = sum(1 for d in profile["decisions"] if any(e in new_ids for e in d["evidence"]))
-        summary_text = f"{wp} PR{'' if wp == 1 else 's'} shipped, {wi} piece{'' if wi == 1 else 's'} of invisible work, {wd} decision{'' if wd == 1 else 's'} in this window. Every item below links to its source."
+        wd, wp_, wu = decision_counts([d for d in profile["decisions"] if any(e in new_ids for e in d["evidence"])])
+        summary_text = f"{wp} PR{'' if wp == 1 else 's'} shipped, {wi} piece{'' if wi == 1 else 's'} of invisible work, {decision_label(wd, wp_, wu)} in this window. Every item below links to its source."
     if kind == "interview_stories" and not keep_internal:  # the page title, summary and the ledger's project and title columns are part of what is shared
         title, summary_text = scrub(title, terms, False, False), scrub(summary_text, terms, False, False)
         for sec in sections:
@@ -588,7 +603,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
               "sections": sections}  # no "sources" list: the page would number every item again (id, title, URL) under the report; links are in the body and the ledger table
     corpus = _clean_obj(corpus)
     result = {"title": title, "mode": kind, "stats": s, "projects": len(profile["projects"]), "invisible_work": len(profile["invisible"]),
-              "decisions": len(profile["decisions"]), "improvement_areas": [a["label"] for a in profile["improvements"]],
+              "decisions": nd, "design_proposals": np, "unconfirmed_design_records": nu, "decision_records": len(profile["decisions"]), "improvement_areas": [a["label"] for a in profile["improvements"]],
               "evidence_gaps": [{"expectation": g["expectation"], "status": g["status"]} for g in profile["gaps"]],
               "unavailable": list(dict.fromkeys(f["source"] for f in failed)),
               "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "analysis_status": "degraded" if FALLBACK in limit_notes else "not_flagged", "ledger_rows": len(rows)}
