@@ -244,6 +244,7 @@ def make_graph(deps: Deps):
         corpus, result = outputs.corpus_for(mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
                                             colleagues=colleagues, names=names, date_from=str(inp.get("period_from", "") or ""), date_to=str(inp.get("period_to", "") or ""),
                                             run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label)
+        result["model_diagnostics"] = list(getattr(deps.llm, "diagnostics", []))
         result["status"] = "completed"
         result["model_calls"] = ctx["budget"].calls  # every attempt on the wire: chat (retries included) plus embeddings (retries and failures included)
         result["embedding_calls"] = ctx["budget"].by_kind.get("embedding", 0)
