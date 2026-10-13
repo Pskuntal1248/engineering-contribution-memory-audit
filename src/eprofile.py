@@ -27,6 +27,7 @@ def outputs_id(n: str) -> bool:
 
 def compact(it: Item, project: str) -> dict[str, Any]:
     m = it.meta
+    from interview import authored_text, proposed
     keep = {k: m[k] for k in ("mine", "confidential", "repo", "number", "merged_flag", "reverted", "is_revert", "received", "reopen_count", "status", "channel", "merged_ids", "state", "my_messages", "generated_only", "docs_only", "cycle_hours", "participants", "paths") if k in m}
     if it.type in {"doc", "pr"} and analysis._DECISION.search(it.text or ""):
         keep["decision_text"] = True  # the stored text is cut short; remember that the full text had decision wording
@@ -35,6 +36,10 @@ def compact(it: Item, project: str) -> dict[str, Any]:
         keep["owner"] = analysis.decision_owner(it.text)
     if it.type in {"doc", "pr"} and analysis.NEEDS_DECISION.search(it.text or ""):
         keep["needs_decision"] = True
+    if it.type == "thread":
+        keep["interview_action"] = authored_text(it)[:1200]
+    if it.type in {"doc", "pr"}:
+        keep["interview_proposed"] = proposed(it)
     keep["size"] = (m.get("size") or {}).get("lines") if m.get("size") else None
     return {"id": it.id, "s": it.source, "t": it.type, "date": it.date, "title": it.title[:160], "url": it.url, "text": it.text[:TEXT_KEEP],
             "author": it.author, "co": it.co_authors[:4], "keys": it.keys[:5], "p": project, "m": keep}
