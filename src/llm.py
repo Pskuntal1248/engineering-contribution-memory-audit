@@ -16,6 +16,8 @@ class GatewayLLM:
         self.base_url, self.token, self.model = base_url, token, model
         self.timeout, self.retries, self.backoff = timeout, retries, backoff
         self._m = None
+        self.unavailable = False
+        self.diagnostics: list[dict[str, Any]] = []
 
     def _model(self):
         if self._m is None:
@@ -24,6 +26,8 @@ class GatewayLLM:
         return self._m
 
     async def structured(self, schema: type[BaseModel], system: str, payload: dict[str, Any], budget=None) -> BaseModel:
+        if self.unavailable:
+            raise RuntimeError("Model analysis unavailable for this run")
         last: Exception | None = None
         for attempt in range(self.retries + 1):
             if budget is not None:
@@ -36,6 +40,14 @@ class GatewayLLM:
                 return res if isinstance(res, schema) else schema.model_validate(res)
             except Exception as e:  # noqa: BLE001 - retried once, then surfaced to the caller, which falls back to rules
                 last = e
-                if attempt < self.retries:
-                    await asyncio.sleep(self.backoff * (attempt + 1))
-        raise RuntimeError(f"model call failed after {self.retries + 1} attempts: {str(last)[:160]}")
+                status = getattr(e, "status_code", None)
+                self.diagnostics.append({"status": status if isinstance(status, int) else None,
+                                         "attempt": attempt + 1, "model": self.model})
+                if status == 402:
+                    self.unavailable = True
+                    raise RuntimeError("Model analysis unavailable for this run") from None
+                transient = status in {408, 429} or (isinstance(status, int) and status >= 500) or isinstance(e, (TimeoutError, ConnectionError)) or type(e).__name__ in {"APIConnectionError", "APITimeoutError"}
+                if not transient or attempt >= self.retries:
+                    break
+                await asyncio.sleep(self.backoff * (attempt + 1))
+        raise RuntimeError("Model analysis could not be completed") from None
