@@ -1,6 +1,6 @@
 contract: v1
 name: engineering-contribution-memory
-version: 0.1.2
+version: 0.1.3
 description: Reads the last 6 months of your GitHub, Jira, Slack and docs and keeps an evidence-linked engineering profile. It links shipped work into projects, shows invisible work like reviews and on-call, evidences gaps against your career ladder, and gives weekly summaries, 1:1 points, review material and interview stories on demand from the saved profile. A Friday 5 PM IST run (changeable) adds the week's new items; the timezone input sets report dates.
 kind: monitor
 
