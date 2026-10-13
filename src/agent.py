@@ -108,7 +108,7 @@ def make_graph(deps: Deps):
             login = str(who.get("login") or "").strip()
             if login:
                 inp["github_username"] = login
-                id_notes.append(f"GitHub username taken from the connected GitHub account: {login}. If that is not you, type your username in the form and run again")
+                id_notes.append(f"GitHub username taken from the connected GitHub account: {login} (GitHub login for attribution, separate from your display name). A display name entered in the form takes priority over the account name. If that login is not you, type your GitHub username and run again")
                 if not str(inp.get("display_name") or "").strip() and str(who.get("name") or "").strip():
                     inp["display_name"] = str(who["name"]).strip()
             else:
@@ -342,5 +342,4 @@ async def graph():
         return GatewaySource(call, cfg.username, cfg.repos, cfg.slack_channels, cfg.include_dms, cfg.jira_projects, has, cfg.docs_sources, cfg.name_hints)
 
     return make_graph(Deps(source_factory, llm, embedder=embedder, identity=identity, site=site))
-
 
