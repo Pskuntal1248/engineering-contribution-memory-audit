@@ -217,7 +217,8 @@ def make_graph(deps: Deps):
         prof = await eprofile.build(items, username=cfg.username, names=names, llm=deps.llm, budget=budget,
                                     framework=str(inp.get("review_framework", "") or ""), role_and_level=str(inp.get("role_and_level", "")),
                                     prior=prior, repo_aliases=cfg.repo_aliases, embedder=deps.embedder,
-                                    team_changes=parse_team_changes(str(inp.get("team_changes", "") or "")), reuse_names=mode != "backfill")
+                                    team_changes=parse_team_changes(str(inp.get("team_changes", "") or "")), reuse_names=mode != "backfill",
+                                    new_ids=None if mode == "backfill" else new_ids)
         notes += prof["notes"]
         ctx["prof"], ctx["notes"], ctx["budget"] = prof, notes, budget
         return {"ctx": ctx}
@@ -253,7 +254,9 @@ def make_graph(deps: Deps):
                                             colleagues=colleagues, names=names, date_from=str(inp.get("period_from", "") or ""), date_to=str(inp.get("period_to", "") or ""),
                                             run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label)
         result["status"] = "completed"
-        result["model_calls"] = ctx["budget"].calls
+        result["model_calls"] = ctx["budget"].calls  # every attempt on the wire: chat (retries included) plus embeddings (retries and failures included)
+        result["embedding_calls"] = ctx["budget"].by_kind.get("embedding", 0)
+        result["chat_calls"] = ctx["budget"].calls - result["embedding_calls"]
         result["seconds"] = round(ctx["budget"].elapsed(), 1)
         result["new_items"] = len(ctx["new_ids"])
         wanted_docs = _docs_sources(str(inp.get("docs_source", "")))

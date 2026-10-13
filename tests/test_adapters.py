@@ -162,11 +162,12 @@ def test_full_run_uses_platform_store_and_keeps_memory_small():
 
 class FakeEmbedder:
     calls = 1
+    last = {"attempts": 1, "failed_attempts": 0}
 
     def __init__(self, fail=False):
         self.fail = fail
 
-    async def embed(self, items):
+    async def embed(self, items, budget=None, reserve=0):
         if self.fail:
             return {}, ["embeddings unavailable, grouped by keywords instead: boom"]
         # two topics: items mentioning 'queue' point one way, everything else the other

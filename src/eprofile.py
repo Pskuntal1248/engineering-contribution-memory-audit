@@ -9,6 +9,7 @@ from guards import TRIVIAL_TITLE
 import linking
 import metrics
 from guards import Budget, Statement, cap_role, confidential_ids, drop_colleague_assessments, keep_cited, predicts_promotion
+import embed
 import ladder
 from ladder import Expectation, parse_framework, statuses
 from models import Item
@@ -58,12 +59,69 @@ def expand(row: dict[str, Any]) -> Item:
 MIN_PROJECT_ITEMS = 2  # a project needs at least 2 linked items
 
 
+def _pending_chat_calls(items: list[Item], *, llm, budget: Budget, framework: str, role_and_level: str, prior: dict[str, Any] | None, repo_aliases: dict[str, str]) -> tuple[int, dict[str, int]]:
+    """Upper bound of the chat requests this run still has to make after the embedding step: thread labels, decision wording, project cards, the framework
+    extraction and the evidence mapping. Same batch sizes as the passes themselves; the project count comes from a keyword-only linking pass."""
+    import inspect
+    if llm is None:
+        return 0, {}
+    pr = prior or {}
+    cthr = inspect.signature(analysis.classify_threads_with_model).parameters
+    threads = [i for i in items if i.type == "thread" and i.meta.get("mine") and i.id not in pr.get("verdicts", {})]
+    dec = [i for i in items if analysis.is_decision_candidate(i) and i.id not in pr.get("dverdicts", {})]
+    cdec = inspect.signature(analysis.classify_decisions_with_model).parameters
+    n_proj = 0
+    try:
+        clusters0 = linking.link(items, repo_aliases, dense=None)
+        n_proj = sum(1 for c in clusters0.values() if len(c["item_ids"]) >= MIN_PROJECT_ITEMS)
+    except Exception:  # noqa: BLE001 - an estimate only
+        n_proj = 0
+    per_card = inspect.signature(analysis.project_cards_with_model).parameters["per_call"].default
+    exps = parse_framework(framework, role_and_level) if framework.strip() else []
+    fw_calls, mapping_exps = 0, (exps or None)
+    if framework.strip() and not exps:
+        saved = pr.get("framework") or {}
+        if saved.get("hash") == ladder.framework_hash(framework, role_and_level) and saved.get("exps"):
+            mapping_exps = [Expectation(**e) for e in saved["exps"]]
+        else:
+            fw_calls = min(ladder.MAX_WINDOWS, -(-len(framework) // ladder.WINDOW))
+    parts = {
+        "thread labels": min(cthr["max_batches"].default, -(-len(threads) // cthr["batch"].default)),
+        "decision wording": min(cdec["max_batches"].default, -(-len(dec) // cdec["batch"].default)),
+        "project cards": -(-n_proj // per_card),
+        "framework reading": fw_calls,
+        "evidence mapping": ladder.pending_mapping_requests(mapping_exps, items, pr.get("mapping")) if framework.strip() else 0,
+    }
+    return sum(parts.values()) + ladder.MAP_RESERVE, parts
+
+
+async def _embedding_step(embedder, items: list[Item], *, llm, budget: Budget, framework: str, role_and_level: str, prior: dict[str, Any] | None,
+                          repo_aliases: dict[str, str], new_ids: set[str] | None) -> tuple[dict[str, list[float]], list[str]]:
+    """Embeddings are optional grouping help, so they never take the calls the required chat work still needs. They are sent only when (a) there is new
+    evidence to group (a backfill, or a week with new items), and (b) one pass over ALL items fits in what is left of the run's model budget after the
+    pending work. Otherwise nothing is sent and the notes say so; grouping then uses keywords and the saved project links. There is no vector cache:
+    a saved item keeps only a truncated text, so an old vector could not be matched to its input."""
+    if new_ids is not None and not new_ids:
+        return {}, ["embeddings not re-run: there is no new evidence since the last run, so grouping used keywords and the saved project links"]
+    need = embed.batches_needed(len(items))
+    reserve, parts = _pending_chat_calls(items, llm=llm, budget=budget, framework=framework, role_and_level=role_and_level, prior=prior, repo_aliases=repo_aliases)
+    room = budget.room(reserve)
+    if need > embed.MAX_BATCHES or need > room:
+        pend = ", ".join(f"{k} {v}" for k, v in parts.items() if v) or "none"
+        return {}, [f"embeddings not used: grouping all {len(items)} items needs {need} request(s) (a pass is limited to {embed.MAX_BATCHES}), but only {room} of this run's "
+                    f"{budget.max_calls} model calls are free after the {reserve} kept for work still pending (pending: {pend}; reserve {ladder.MAP_RESERVE}). No embedding request "
+                    "was sent; grouping used keywords and the saved project links"]
+    return await embedder.embed(items, budget=budget, reserve=reserve)
+
+
 async def build(items: list[Item], *, username: str, names: set[str], llm, budget: Budget, framework: str, role_and_level: str,
-                prior: dict[str, Any] | None, repo_aliases: dict[str, str] | None = None, embedder=None, team_changes: list[tuple[str, str]] | None = None, reuse_names: bool = False) -> dict[str, Any]:
+                prior: dict[str, Any] | None, repo_aliases: dict[str, str] | None = None, embedder=None, team_changes: list[tuple[str, str]] | None = None, reuse_names: bool = False,
+                new_ids: set[str] | None = None) -> dict[str, Any]:
     by_id = {i.id: i for i in items}
     dense, enotes = ({}, [])
     if embedder is not None and items:
-        dense, enotes = await embedder.embed(items)
+        dense, enotes = await _embedding_step(embedder, items, llm=llm, budget=budget, framework=framework, role_and_level=role_and_level, prior=prior,
+                                              repo_aliases=repo_aliases or {}, new_ids=new_ids)
     clusters = linking.link(items, repo_aliases or {}, dense=dense or None)
     links = {i: r for c in clusters.values() for i, r in c["links"].items()}
     if reuse_names:  # a saved item that re-linking now drops (its stored text is shorter) goes back to the project it was in
@@ -83,12 +141,8 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
     project_of = {iid: pid for pid, c in clusters.items() for iid in c["item_ids"]}
     notes: list[str] = list(enotes)
     if embedder is not None and dense:
-        notes.append(f"topic grouping used embeddings ({embedder.calls} call{'' if embedder.calls == 1 else 's'} to the Gravity endpoint) plus keywords")
-        for _ in range(embedder.calls):  # an embeddings call is a model call: it counts against the limit and shows in model_calls
-            try:
-                budget.spend()
-            except Exception:  # noqa: BLE001 - already made; only the count matters
-                break
+        st = getattr(embedder, "last", {}) or {}
+        notes.append(f"topic grouping used embeddings: all {len(items)} items in {st.get('attempts', '?')} request(s), {st.get('failed_attempts', 0)} failed, each charged to the run's model budget, plus keywords")
     prior_ver = (prior or {}).get("verdicts", {})
 
     # invisible work / thread verdicts (model only for threads we have no verdict for)

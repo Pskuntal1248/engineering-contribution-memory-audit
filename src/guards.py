@@ -25,13 +25,21 @@ class Budget:
     max_seconds: float
     calls: int = 0
     started: float = field(default_factory=time.monotonic)
+    by_kind: dict = field(default_factory=dict)  # attempts charged per kind ("embedding"; everything else is chat)
 
-    def spend(self) -> None:
-        if self.calls >= self.max_calls:
-            raise BudgetExceeded(f"model-call limit of {self.max_calls} reached")
+    def spend(self, kind: str = "model", reserve: int = 0) -> None:
+        """Check the call and time room and charge one attempt, in one synchronous step (callers must not await between this and the network send).
+        `reserve` keeps that many calls for work that is still pending: an optional step may not use them."""
+        if self.calls >= self.max_calls - reserve:
+            raise BudgetExceeded(f"model-call limit of {self.max_calls} reached" if not reserve else
+                                 f"only {max(0, self.max_calls - self.calls)} of {self.max_calls} model calls are left and {reserve} are kept for work still pending")
         if self.elapsed() > self.max_seconds:
             raise BudgetExceeded(f"time limit of {self.max_seconds:.0f}s reached")
         self.calls += 1
+        self.by_kind[kind] = self.by_kind.get(kind, 0) + 1
+
+    def room(self, reserve: int = 0) -> int:
+        return max(0, self.max_calls - self.calls - reserve)
 
     def elapsed(self) -> float:
         return time.monotonic() - self.started

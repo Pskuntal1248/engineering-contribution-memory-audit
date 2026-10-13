@@ -251,6 +251,17 @@ async def map_evidence_with_model(llm, budget, exps: list[Expectation], items: l
     return res
 
 
+def pending_mapping_requests(exps: list[Expectation] | None, items: list[Item], cache: dict[str, Any] | None) -> int:
+    """The mapping requests this run would actually send (same arithmetic as map_evidence_with_model, before the budget is applied). exps=None: the
+    expectations are not read yet, so every candidate will be asked."""
+    cands = mapping_candidates(items)
+    todo = len(cands)
+    if exps is not None and (cache or {}).get("fw") == expectations_hash(exps):
+        have = (cache or {}).get("items") or {}
+        todo = sum(1 for c in cands if have.get(c.id) != item_digest(c))
+    return min(MAX_MAP_CALLS, -(-todo // MAP_BATCH))
+
+
 def statuses(expectations: list[Expectation], evidence: dict[str, list[str]], known: set[str], incomplete: bool = False) -> list[dict]:
     """backed (3+ distinct valid items), thin (1-2), missing (none). Invalid ids never count. When the mapping is incomplete, a status that could change
     with the unseen evidence (thin or missing) is "unavailable": absence of a mapping is not evidence of absence. Three real items are backed either way."""
