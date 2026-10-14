@@ -92,7 +92,7 @@ def channels_to_read(all_channels: list[dict[str, Any]], chosen: list[str], incl
         nm = str(ch.get("name", "")).lower()
         if is_dm_channel(ch):
             ids = {nm, str(ch.get("id", "")).lower(), str(ch.get("user", "")).lower()} - {""}
-            if include_dms and (ids & names or "*dm*" in names or not names):
+            if include_dms and (ids & names):
                 picked.append(ch)
             elif log is not None:
                 log.add("skipped_channel", channel=ch.get("id"), reason="dm excluded")
@@ -102,7 +102,7 @@ def channels_to_read(all_channels: list[dict[str, Any]], chosen: list[str], incl
             picked.append(ch)
             found |= ids & names
     found |= {str(c.get("id", "")).lower() for c in picked} | {str(c.get("user", "")).lower() for c in picked}
-    return picked, sorted(names - found - {"*dm*"})
+    return picked, sorted(names - found)
 
 
 def drop_unconsented(items: Iterable[Item], include_dms: bool) -> tuple[list[Item], int]:
