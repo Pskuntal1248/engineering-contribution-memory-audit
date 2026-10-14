@@ -324,23 +324,27 @@ def map_skills(items: list[Item]) -> list[dict[str, Any]]:
 
 
 def _distinct_work(its: list[Item]) -> set[str]:
-    """Distinct pieces of work: items that share any ticket key (a PR, its ticket, commits that name an old key) are one; keyless items go by title."""
+    """Deduplicate a change's own ticket/branch alias; shared epics and referenced tickets aren't identity."""
     parent: dict[str, str] = {}
-
-    def find(x: str) -> str:
+    def find(x):
         while parent.setdefault(x, x) != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
+    identities = []
     for i in its:
-        ks = list(i.keys) or ["title:" + re.sub(r"^[A-Z][A-Z0-9]+-\d+[:\s-]*", "", i.title).strip().lower()]
-        m = re.match(r"^([A-Z][A-Z0-9]+-\d+)\b", i.title)
-        if m:
-            ks.append(m.group(1))
-        for k in ks[1:]:
-            parent[find(k)] = find(ks[0])
-        find(ks[0])
-    return {find(k) for k in parent}
+        m = re.match(r'^([A-Z][A-Z0-9]+-\d+)\b', i.title)
+        primary = m.group(1) if m else (i.id.removeprefix('jira:') if i.type == 'ticket' else '')
+        aliases = list(i.meta.get('aliases', [])) if i.type == 'ticket' else []
+        if i.type == 'pr':
+            branch = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', str(i.meta.get('branch', '')))
+            if branch: aliases.append(branch.group(1))
+        key = primary or 'item:' + i.id
+        find(key)
+        for alias in aliases:
+            parent[find(alias)] = find(key)
+        identities.append(key)
+    return {find(k) for k in identities}
 
 
 # --------------------------------------------------------------------------- model passes
