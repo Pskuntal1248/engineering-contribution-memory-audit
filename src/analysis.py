@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from guards import Budget, BudgetExceeded, Statement, cap_role, clip, co_contributors, decision_voice, first_person, drop_colleague_assessments, keep_cited
+from guards import TRIVIAL_TITLE, Budget, BudgetExceeded, Statement, cap_role, clip, co_contributors, decision_voice, first_person, drop_colleague_assessments, keep_cited
 from linking import tokens
 from metrics import shipped
 from models import Item, day
@@ -267,6 +267,10 @@ def baseline_project_card(pid: str, ids: list[str], by_id: dict[str, Item], user
     ev = [by_id[i] for i in ids]
     tickets = [e for e in ev if e.type == "ticket"]
     name = project_name(ev)
+    if not name:
+        repos = sorted({e.meta["repo"] for e in ev if e.meta.get("repo")})
+        nontrivial = next((e for e in ev if not TRIVIAL_TITLE.search(e.title)), ev[0])
+        name = (repos[0].split("/")[-1] + ": " if repos else "") + clip(nontrivial.title, 60)
     prs = [e for e in ev if e.type == "pr" and e.meta.get("mine")]
     shipped_n = sum(1 for e in prs if shipped(e))
     role = cap_role("built" if prs else "contributed", ev, username)
@@ -393,7 +397,7 @@ async def project_cards_with_model(llm: LLM | None, budget: Budget, base: list[d
         for c in res.projects:  # type: ignore[attr-defined]
             if c.project_id not in out:
                 continue
-            ev = [e for e in c.evidence if e in by_id] or out[c.project_id]["evidence"]
+            ev = [e for e in c.evidence if e in set(out[c.project_id]["evidence"])] or out[c.project_id]["evidence"]
             src_text = " ".join(by_id[e].text + " " + by_id[e].title for e in ev).lower()
             out[c.project_id].update(name=clip(c.name, 80), goal=_supported(_grounded(first_person(clip(c.goal, 240)), src_text), src_text) or out[c.project_id]["goal"], outcome=_supported(_grounded(first_person(clip(c.outcome, 240)), src_text), src_text) or out[c.project_id]["outcome"], role=cap_role(c.role, [by_id[e] for e in ev], username))
     return list(out.values()), notes
