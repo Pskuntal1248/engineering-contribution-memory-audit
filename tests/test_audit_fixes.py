@@ -14,9 +14,9 @@ def test_valid_inputs_pass():
     ok = {"backfill_months": 6, "request": "one_on_one", "docs_source": "Notion + Google Drive", "period_from": "2026-04-01", "period_to": "2026-09-30",
           "repos_or_org": "o/r, o/s", "timezone": "Asia/Kolkata", "team_changes": "2026-07-01: Platform", "include_dms": "No"}
     assert validate_inputs(ok) == []
-    assert validate_inputs({}) == []
+    assert any("select at least one" in e for e in validate_inputs({}))
     for d in ["None", "Confluence", "Notion", "Google Drive", "Confluence + Notion", "Confluence + Google Drive", "Notion + Google Drive", "All three", "all three"]:
-        assert validate_inputs({"docs_source": d}) == [], d
+        assert validate_inputs({"docs_source": d, "repos_or_org": "o/r"}) == [], d
 
 
 @pytest.mark.parametrize("bad,key", [
