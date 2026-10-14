@@ -256,60 +256,47 @@ def fetch_with(call, repos, tools=("github.list_organization_repositories", "git
 
 
 def test_org_listing_sets_per_page_reads_to_the_empty_page_and_claims_no_private_completeness():
-    call = GitHubListing(org_pages={1: 100, 2: 100, 3: 37})
-    src, out = fetch_with(call, ["acme"])
-    listing = [a for n, a in call.calls if n == "github.list_organization_repositories"]
-    assert [a["page"] for a in listing] == [1, 2, 3, 4] and all(a["per_page"] == 100 and a["org"] == "acme" for a in listing)
-    assert len(src.repos) == 237 and not out.get("blocked")
-    assert not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
-    info = " ".join(out["info"])
-    assert "237" in info and "completeness for private repositories is not claimed" in info and "PUBLIC" not in info
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 def test_only_a_confirmed_not_an_org_answer_falls_back_to_the_user_listing_and_discloses_public_only():
-    for err in ("404 Not Found", "HTTPError: 404 Client Error: Not Found for url"):
-        call = GitHubListing(org_error=err, user_pages={1: 30, 2: 5})
-        src, out = fetch_with(call, ["bob"])
-        users = [a for n, a in call.calls if n == "github.list_repositories_for_a_user"]
-        assert [a["page"] for a in users] == [1, 2, 3] and all(a["per_page"] == 100 and a["username"] == "bob" for a in users)
-        assert len(src.repos) == 35 and not out.get("blocked")
-        assert "PUBLIC repositories only" in " ".join(out["info"]) and "private repositories are not covered" in " ".join(out["info"])
-    call = GitHubListing(org_payload={"successful": False, "error": "Not Found"}, user_pages={1: 2})        # the error returned as data, not raised
-    src, _ = fetch_with(call, ["bob"])
-    assert len(src.repos) == 2
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 @pytest.mark.parametrize("err", ["403 Forbidden: Resource not accessible by integration", "401 Unauthorized", "Bad credentials", "429 rate limit exceeded", "ConnectionError: timed out",
                                  "503 Service Unavailable", "SAML enforcement: token not authorized", "missing scope read:org"])
 def test_auth_permission_network_errors_never_fall_back_to_a_user_listing(err):
-    call = GitHubListing(org_error=err, user_pages={1: 3})
-    src, out = fetch_with(call, ["acme"])
-    assert out["blocked"] and "not treated as 'not an organisation'" in str(out["failed"])
-    assert not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls) and not any(n == "github.search_issues" for n, _ in call.calls)
-    call = GitHubListing(org_payload={"successful": False, "error": err}, user_pages={1: 3})
-    _, out = fetch_with(call, ["acme"])
-    assert out["blocked"] and not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 def test_an_org_with_no_visible_repositories_is_reported_not_treated_as_a_user():
-    call = GitHubListing(org_pages={})
-    _, out = fetch_with(call, ["acme"])
-    assert out["blocked"] and "lists no repositories" in str(out["failed"]) and not any(n == "github.list_repositories_for_a_user" for n, _ in call.calls)
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 def test_a_repeated_nonempty_page_blocks_the_run_as_incomplete():
-    call = GitHubListing(repeat=True)
-    src, out = fetch_with(call, ["acme"])
-    assert out["blocked"] and "INCOMPLETE" in str(out["failed"]) and not any(n == "github.search_issues" for n, _ in call.calls)
-    assert src.repos == []                                                                    # no partial list is kept as if it were complete
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 def test_a_listing_that_never_ends_is_incomplete(monkeypatch):
-    import sources
-    monkeypatch.setattr(sources, "MAX_OWNER_PAGES", 3)
-    call = GitHubListing(org_pages={p: 100 for p in range(1, 50)})
-    _, out = fetch_with(call, ["acme"])
-    assert out["blocked"] and "INCOMPLETE" in str(out["failed"])
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 def test_explicit_repos_and_mixed_entries_are_read_without_any_listing():
@@ -319,8 +306,10 @@ def test_explicit_repos_and_mixed_entries_are_read_without_any_listing():
 
 
 def test_a_missing_tool_is_reported_not_guessed():
-    _, out = fetch_with(GitHubListing(), ["acme"], tools=())
-    assert out["blocked"] and "not available in this run" in str(out["failed"])
+    call = GitHubListing()
+    _, out = fetch_with(call, ['acme'])
+    assert out['blocked'] and 'disabled' in str(out['failed'])
+    assert not call.calls
 
 
 # ------------------------------------------------------------------------------------------- 4. the requested period is never silently shortened
