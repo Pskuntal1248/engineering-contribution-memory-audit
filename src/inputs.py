@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-REQUESTS = ("update_source_setup", "enrich_new_scopes", "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps")
+REQUESTS = ( "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps")
 DOCS_PARTS = {"none", "confluence", "notion", "google drive"}
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a bare GitHub organisation or user name
