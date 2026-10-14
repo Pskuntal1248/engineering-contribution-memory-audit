@@ -4,7 +4,6 @@ import copy
 from urllib.parse import urlparse
 from inputs import repo_entries
 
-ACTIONS = {'update_source_setup', 'enrich_new_scopes'}
 FIELDS = ('repos_or_org', 'exclude_repos', 'jira_site', 'jira_projects', 'slack_channels', 'include_dms', 'slack_user_ids', 'docs_source', 'display_name', 'github_username')
 
 
@@ -38,7 +37,7 @@ def scopes(config):
 
 
 def resolve(prior, inputs):
-    """Normal/scheduled inputs never overwrite saved scope. Explicit replacement requires current revision."""
+    """Save additive explicit source selections; blanks keep history and existing scopes."""
     saved = prior.get('source_setup')
     if not saved and prior.get('last_run'):
         # Older code recorded explicit selections but not a shared setup. Migrate those selections, never broad discovery.
@@ -50,29 +49,14 @@ def resolve(prior, inputs):
             if old in prior.get('source_selection', {}):
                 legacy[new] = prior['source_selection'][old]
         saved = {'revision': 1, 'config': canonical(legacy)}
-    action = str(inputs.get('request') or 'weekly_update').strip().lower()
+    if saved and saved['config'].get('exclude_repos'):
+        saved = copy.deepcopy(saved)
+        saved['config']['repos_or_org'] = ', '.join(v['repo'] for v in scopes(saved['config']).values() if v['source'] == 'github')
+        saved['config']['exclude_repos'] = ''
+    setup = copy.deepcopy(saved) if saved else {'revision': 1, 'config': canonical(inputs)}
+    cfg = setup['config']
     if saved:
-        setup = copy.deepcopy(saved)
-        if action == 'update_source_setup':
-            token = str(inputs.get('setup_revision') or '')
-            if token != str(saved['revision']):
-                raise ValueError(f"Source setup revision is {saved['revision']}; enter this in setup_revision to replace it. Stale scheduled inputs cannot change the setup.")
-            cfg = canonical(inputs)
-            for field in ('github_username', 'jira_site', 'display_name', 'slack_user_ids'):
-                if not cfg.get(field):
-                    cfg[field] = saved['config'].get(field, '')
-            if cfg.get('github_username', '').lower() != saved['config'].get('github_username', '').lower():
-                raise ValueError('Changing the GitHub identity of a saved profile is not supported. Source setup unchanged.')
-            if saved['config'].get('jira_site') and cfg.get('jira_site') and saved['config']['jira_site'].rstrip('/').lower() != cfg['jira_site'].rstrip('/').lower():
-                raise ValueError('Changing the Jira site of a saved profile is not supported. Source setup unchanged.')
-            setup = {'revision': saved['revision'] + 1, 'config': cfg, 'removed_scopes': sorted(set(saved.get('removed_scopes', [])) | (set(scopes(saved['config'])) - set(scopes(cfg))))}
-        else:
-            cfg = setup['config']
-    else:
-        cfg = canonical(inputs)
-        setup = {'revision': 1, 'config': cfg}
-    if saved and action not in ACTIONS:
-        # Capture only genuinely new additive scopes. Existing values and removals need explicit revision-checked replacement.
+        # Add new scopes only. Blank inputs and stale removed scopes never widen access.
         candidate = canonical(inputs)
         additions = set(scopes(candidate)) - set(scopes(cfg)) - set(setup.get('removed_scopes', []))
         staged = copy.deepcopy(setup.get('pending_config') or cfg)
@@ -95,11 +79,25 @@ def resolve(prior, inputs):
             staged['docs_source'] = ' + '.join(sorted(docs))
         if staged != cfg:
             setup['pending_config'] = staged
-    if action == 'enrich_new_scopes' and setup.get('pending_config'):
+    if setup.get('pending_config'):
         cfg = setup.pop('pending_config')
         setup['config'] = cfg
         setup['revision'] += 1
+    # Removal is explicit, never inferred from blank source fields. Replays are idempotent.
+    remove = {x.lower() for x in repo_entries(inputs.get('remove_sources'))}
+    if remove - {'jira', 'slack', 'docs', 'dms'}:
+        raise ValueError('Stop reading sources: use Jira, Slack, Docs or DMs, separated by commas.')
+    old_scopes = set(scopes(cfg))
+    for name in remove:
+        for field, value in {'jira': [('jira_projects', '')], 'slack': [('slack_channels', ''), ('include_dms', 'No')], 'docs': [('docs_source', 'None')], 'dms': [('include_dms', 'No')]}.get(name, []):
+            cfg[field] = value
+    removed = old_scopes - set(scopes(cfg))
+    if removed:
+        setup['removed_scopes'] = sorted(set(setup.get('removed_scopes', [])) | removed)
+        setup['revision'] += 1
+    setup.pop('preview', None)
     effective = {**inputs, **cfg}
+    effective['exclude_repos'] = ''
     return effective, setup
 
 
