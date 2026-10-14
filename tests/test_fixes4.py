@@ -102,24 +102,19 @@ class JiraProjectsRefused(Gateway):
         return await super().__call__(name, args)
 
 
-def test_jira_preflight_refused_blocks_the_read():
-    # an auth refusal means the keys are unverified, not safe: nothing is read
+def test_jira_preflight_refused_does_not_block_other_sources():
     gw = JiraProjectsRefused()
     out = run_jira(gw, ["PAY"], HAS | {"jira.get_all_projects"})
-    assert out["jira"] == []
+    assert out["jira"] == [] and not out.get("blocked")
     assert not any(n == "jira.search_issues" for n, _ in gw.calls)
-    err = next(f["error"] for f in out["failed"] if f["source"] == "jira-preflight")
-    assert "could not be verified" in err
-    assert not any(n == "slack.search_messages" for n, _ in gw.calls)  # refused Jira validation blocks Slack too
+    assert out["coverage"]["jira"] == "isn't connected"
 
 
-def test_jira_preflight_tool_missing_blocks_the_read():
-    gw = Gateway()  # the base gateway never answers jira.get_all_projects
+def test_jira_preflight_tool_missing_is_optional():
+    gw = Gateway()
     out = run_jira(gw, ["PAY"], HAS - {"jira.get_all_projects"})
-    assert out["jira"] == []
-    assert not any(n == "jira.search_issues" for n, _ in gw.calls)
-    assert any(f["source"] == "jira-preflight" and "not available" in f["error"] for f in out["failed"])
-    assert not any(n == "slack.search_messages" for n, _ in gw.calls)
+    assert out["jira"] == [] and not out.get("blocked")
+    assert out["coverage"]["jira"] == "isn't available in this run"
 
 
 # ------------------------------------------ the barrier is global: one bad input, zero contribution reads anywhere
@@ -136,15 +131,12 @@ def test_invalid_slack_blocks_github_jira_and_docs():
     assert any(f["source"] == "preflight" for f in out["failed"])
 
 
-def test_refused_jira_blocks_github_slack_and_docs():
+def test_refused_jira_leaves_github_slack_and_docs_available():
     gw = JiraProjectsRefused()
     out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("#payments-eng"), False, ["PAY"], HAS | {"jira.get_all_projects"}, DOCS, ["Parth Singh"]).fetch(SINCE, None, ToolLog()))
-    assert {n for n, _ in gw.calls} <= DISCOVERY  # the valid Slack channels and repos are not read either
-    assert out["github"] == {"prs": [], "reviews": {}, "commits": []} and out["docs"] == [] and out["slack"]["threads"] == []
-    assert any(f["source"] == "preflight" for f in out["failed"])
+    assert not out.get("blocked") and out["coverage"]["jira"] == "isn't connected"
+    assert any(n == "github.search_issues" for n, _ in gw.calls)
 
-
-# ------------------------------------------ a blocked run saves nothing and says it was stopped
 
 def blocked_deps(gw, store):
     import agent
