@@ -52,7 +52,7 @@ class FixtureSource:
 
     async def fetch(self, since: str, until: str | None, log: ToolLog) -> dict[str, Any]:
         from datetime import datetime, timezone
-        hi = self.before or "9999"
+        hi = min(self.before or "9999", until or "9999")
         lo = since
 
         def ok(ts: str) -> bool:
@@ -99,6 +99,23 @@ class GatewaySource:
                 if self.deadline is not None and time.monotonic() > self.deadline:
                     self.skipped += 1
                     raise FetchTimeUp("fetch time limit reached")  # waiting callers stop here instead of running past the run's time limit
+                args = dict(args)
+                end = getattr(self, 'window_end', '')
+                if end and getattr(self, 'window_is_current', False):
+                    from datetime import datetime, timedelta
+                    end = (datetime.fromisoformat(end.replace('Z', '+00:00')) + timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
+                if end:
+                    if tool == 'jira.search_issues':
+                        args['jql'] = args['jql'].replace(' ORDER BY', f' AND updated < "{end[:10]}" ORDER BY')
+                    elif tool == 'slack.search_messages':
+                        args['query'] += ' before:' + end[:10]
+                    elif tool == 'slack.read_history':
+                        from datetime import datetime
+                        args['latest'] = str(datetime.fromisoformat(end.replace('Z', '+00:00')).timestamp())
+                    elif tool == 'confluence.cql_search':
+                        args['cql'] = args['cql'].replace(' ORDER BY', f' AND lastModified < "{end[:10]}" ORDER BY')
+                    elif tool == 'drive.find_file':
+                        args['q'] += f" and modifiedTime < '{end}'"
                 key = (tool, json.dumps(args, sort_keys=True))
                 if key in self._read_cache:
                     return self._read_cache[key]
@@ -113,6 +130,8 @@ class GatewaySource:
     def configure_scope(self, exclude_repos, window_start, window_end):
         self.scope_settings = (exclude_repos, window_start, window_end)
         self.window_end = window_end
+        self._pagination_incomplete = False
+        self.call.window_end = window_end
 
     async def fetch(self, since: str, until: str | None, log: ToolLog) -> dict[str, Any]:
         out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": [], "coverage": {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}}
@@ -169,6 +188,8 @@ class GatewaySource:
                              doc_part("confluence", "confluence.cql_search", adapters.fetch_confluence),
                              doc_part("notion", "notion.search_notion_page", adapters.fetch_notion),
                              doc_part("google drive", "drive.find_file", adapters.fetch_drive))
+        if getattr(self, '_pagination_incomplete', False):
+            out['capped'].append('GitHub listing reached its page limit; history coverage was not advanced')
         if self.skipped:
             out["failed"] = [f for f in out["failed"] if "fetch time limit" not in str(f.get("error"))]
             out["capped"].append(f"time limit: stopped reading sources early, {self.skipped} detail reads (PR files, reviews, ticket history, Slack threads, pages) were not done; "
@@ -331,6 +352,8 @@ class GatewaySource:
                 break
             if since and all(str(g.get("created_at") or "9") < since for g in got):
                 break
+        if len(rows) >= cap or len(got) >= PAGE and page == MAX_LIST_PAGES:
+            self._pagination_incomplete = True
         return rows[:cap]
 
     async def _github(self, out: dict, since: str, log: ToolLog) -> None:
@@ -356,10 +379,15 @@ class GatewaySource:
                 return await self.call(tool, args)
 
         log.add("github.search_issues", repo=repo)
-        q = f"repo:{repo} is:pr author:{self.username} created:>={since[:10]}"
+        end_date = getattr(self, 'window_end', '')[:10]
+        if end_date and getattr(self, 'window_is_current', False):
+            from datetime import date, timedelta
+            end_date = (date.fromisoformat(end_date) + timedelta(days=1)).isoformat()
+        end_filter = ' created:<' + end_date if end_date else '' 
+        q = f"repo:{repo} is:pr author:{self.username} created:>={since[:10]}" + end_filter
         prs = await self._paged("github.search_issues", {"q": q}, ("items",), MAX_PRS_PER_REPO)
         log.add("github.search_issues", repo=repo, reviewed_by=self.username)
-        rv_q = f"repo:{repo} is:pr reviewed-by:{self.username} -author:{self.username} created:>={since[:10]}"
+        rv_q = f"repo:{repo} is:pr reviewed-by:{self.username} -author:{self.username} created:>={since[:10]}" + end_filter
         others = await self._paged("github.search_issues", {"q": rv_q}, ("items",), 300)
         # Search results often lack merged_at. The PR list carries it, so one call per repo fills it in by number.
         try:
