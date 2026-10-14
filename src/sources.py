@@ -16,7 +16,6 @@ from guards import ToolLog, err_text
 Call = Callable[[str, dict], Awaitable[Any]]  # call("github.list_pr_reviews", {...}) -> parsed payload
 
 MAX_PRS_PER_REPO = 600
-MAX_COMMITS_PER_REPO = 300
 MAX_COMMIT_LOOKUPS = 100
 PARALLEL = 10  # simultaneous gateway calls
 PAGE = 100  # the largest page the GitHub tools give
@@ -89,6 +88,8 @@ class GatewaySource:
         self.docs_sources = [d.lower() for d in (docs_sources or [])]
         gate = asyncio.Semaphore(PARALLEL)  # one limit for every source running side by side
 
+        self._read_cache = {}
+        self.repo_metadata = {}
         self.deadline: float | None = None  # monotonic time after which no new gateway call starts (set by the graph)
         self.skipped = 0
 
@@ -97,12 +98,20 @@ class GatewaySource:
                 if self.deadline is not None and time.monotonic() > self.deadline:
                     self.skipped += 1
                     raise FetchTimeUp("fetch time limit reached")  # waiting callers stop here instead of running past the run's time limit
-                return await call(tool, args)
+                key = (tool, json.dumps(args, sort_keys=True))
+                if key in self._read_cache:
+                    return self._read_cache[key]
+                response = await call(tool, args)
+                from adapters import failed_payload
+                if not failed_payload(response):
+                    self._read_cache[key] = response
+                return response
         self.call, self.username, self.repos = limited, username, repos
         self.slack_channels, self.include_dms, self.jira_projects, self.has = slack_channels, include_dms, jira_projects, has
 
     def configure_scope(self, exclude_repos, window_start, window_end):
         self.scope_settings = (exclude_repos, window_start, window_end)
+        self.window_end = window_end
 
     async def fetch(self, since: str, until: str | None, log: ToolLog) -> dict[str, Any]:
         out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": [], "coverage": {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}}
@@ -117,8 +126,10 @@ class GatewaySource:
             else:
                 from repo_scope import discover
                 try:
-                    self.repos, out["repo_scope"], issues = await discover(self.call, self.username, window_start, window_end, exclusions, log)
+                    self.repos, out["repo_scope"], issues = await discover(self.call, self.username, window_start, window_end, exclusions, log, metadata=self.repo_metadata)
                     out["failed"].extend(issues)
+                    if issues:
+                        out["github_incomplete"] = True
                 except Exception as e:
                     out["failed"].append({"source": "github-discovery", "error": "repository scope could not be verified: " + err_text(e, 200)})
                     out["blocked"] = True
@@ -365,11 +376,16 @@ class GatewaySource:
         return rows[:cap]
 
     async def _github(self, out: dict, since: str, log: ToolLog) -> None:
-        for repo in self.repos:
-            try:
-                await self._github_repo(out, repo, since, log)
-            except Exception as e:  # noqa: BLE001
-                out["failed"].append({"source": f"github:{repo}", "error": err_text(e, 200)})
+        gate = asyncio.Semaphore(3)
+        async def read(repo):
+            async with gate:
+                try:
+                    await self._github_repo(out, repo, since, log)
+                except Exception as e:  # noqa: BLE001
+                    if "github.list_commits" in self.has:
+                        out["github_incomplete"] = True
+                    out["failed"].append({"source": f"github:{repo}", "error": err_text(e, 200)})
+        await asyncio.gather(*(read(repo) for repo in self.repos))
         if self.repos and len(out["github"]["prs"]) >= MAX_PRS_PER_REPO * len(self.repos):
             out["capped"].append("github PRs hit the per-repo cap")
 
@@ -444,27 +460,66 @@ class GatewaySource:
     async def _commits(self, out: dict, repo: str, since: str, log: ToolLog) -> None:
         """Commits by the user, so repos without PRs still show work. Bots, merges and PR-covered commits are dropped in ingest."""
         owner, name = repo.split("/", 1)
+        from adapters import failed_payload
+        from repo_scope import pages, MAX_PAGES
+        args = {"owner": owner, "repo": name, "author": self.username, "since": since}
+        if getattr(self, "window_end", None):
+            args["until"] = self.window_end
+        picked, seen = [], set()
+        async def collect(ref=None):
+            previous = set()
+            for page in range(1, MAX_PAGES + 1):
+                query = {**args, "per_page": PAGE, "page": page}
+                if ref is not None:
+                    query["sha"] = ref
+                log.add("github.list_commits", **query)
+                response = await self.call("github.list_commits", query)
+                if bad := failed_payload(response):
+                    raise RuntimeError(bad)
+                batch = _rows(response, "commits")
+                fresh = {str(c.get("sha")) for c in batch if c.get("sha")}
+                if batch and (len(fresh) == 0 or fresh <= previous):
+                    raise RuntimeError("commit listing repeated a page; coverage incomplete")
+                previous.update(fresh)
+                for c in batch:
+                    sha = str(c.get("sha") or "")
+                    if sha and sha not in seen:
+                        seen.add(sha)
+                        picked.append(c)
+                if len(batch) < PAGE:
+                    return
+            raise RuntimeError("commit page safety limit reached; coverage incomplete")
         try:
-            log.add("github.list_commits", repo=repo)
-            rows = await self._paged("github.list_commits", {"owner": owner, "repo": name, "author": self.username, "since": since}, ("commits",), MAX_COMMITS_PER_REPO)
             if self.scope_settings and "github.list_branches" in self.has:
-                from repo_scope import pages
                 branches = await pages(self.call, "github.list_branches", {"owner": owner, "repo": name}, ("branches",))
-                by_sha = {str(c.get("sha")): c for c in rows if c.get("sha")}
+                heads = set()
+                default = self.repo_metadata.get(repo.lower(), {}).get("default_branch")
+                if default:
+                    await collect()  # reuse successful qualification page when bounds match
                 for branch in branches:
                     ref = str(branch.get("name") or "")
                     if not ref:
                         raise RuntimeError("branch name could not be verified")
-                    more = await self._paged("github.list_commits", {"owner": owner, "repo": name, "author": self.username, "since": since, "sha": ref}, ("commits",), MAX_COMMITS_PER_REPO)
-                    by_sha.update({str(c.get("sha")): c for c in more if c.get("sha")})
-                rows = list(by_sha.values())
-        except Exception as e:  # noqa: BLE001 - named in the result
+                    if default and ref == default:
+                        continue
+                    head = str((branch.get("commit") or {}).get("sha") or "")
+                    if default and picked and head == str(picked[0].get("sha") or ""):
+                        heads.add(head)
+                        continue
+                    if head and head in heads:
+                        continue  # equal heads prove identical reachable history
+                    if head:
+                        heads.add(head)
+                    await collect(ref)
+                if not branches:
+                    await collect()
+            else:
+                await collect()
+        except Exception as e:  # retain collected evidence, but never advance past missing history
+            if "github.list_commits" in self.has:
+                out["github_incomplete"] = True
             out["failed"].append({"source": f"github-commits:{repo}", "error": err_text(e, 200)})
-            return
-        if len(rows) >= MAX_COMMITS_PER_REPO:
-            out["capped"].append(f"commits for {repo}: first {MAX_COMMITS_PER_REPO} only")
         sem = asyncio.Semaphore(PARALLEL)
-        picked = rows[:MAX_COMMITS_PER_REPO]
 
         pr_shas = {str(p.get("merge_commit_sha")) for p in out["github"]["prs"] if p.get("merge_commit_sha")}
         pr_shas |= {sha for p in out["github"]["prs"] for sha in (p.get("_commit_shas") or [])}
