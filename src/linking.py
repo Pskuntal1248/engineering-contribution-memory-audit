@@ -166,9 +166,19 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
     for i in items:
         clusters[uf.find(i.id)].append(i.id)
 
+    def repos(ids: list[str]) -> set[str]:
+        return {repo_aliases.get(by_id[i].meta["repo"], by_id[i].meta["repo"]).lower()
+                for i in ids if by_id[i].meta.get("repo")}
+
+    def compatible_repos(ra: set[str], rb: set[str]) -> bool:
+        # Only exact references/keys above may establish a cross-repo project.
+        # Missing repo on a doc/thread is not a conflicting repo identity.
+        return not ra or not rb or bool(ra & rb)
+
     # 4. loose items (no strong link) attach to the best nearby cluster by topic. Never merges clusters.
     vecs = blend(tfidf_vectors(items), dense)
     multi = {r: ids for r, ids in clusters.items() if len(ids) > 1}
+    multi_repos = {r: repos(ids) for r, ids in multi.items()}
     centroid: dict[str, dict[str, float]] = {}
     for r, ids in multi.items():
         c: Counter[str] = Counter()
@@ -186,6 +196,8 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
         d = parse_ts(it.date)
         best, score = None, 0.0
         for mr, cen in centroid.items():
+            if not compatible_repos(repos(ids), multi_repos[mr]):
+                continue
             lo, hi = span[mr]
             if d is None or d < lo - timedelta(days=window_days) or d > hi + timedelta(days=window_days):
                 continue
@@ -212,6 +224,10 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
         return {canon_key(k).split("-")[0] for iid in ids if by_id[iid].type not in {"thread", "doc"} for k in by_id[iid].keys if "-" in k}
 
     pre = {r: prefixes(ids) for r, ids in units.items()}
+    unit_repos = {r: repos(ids) for r, ids in units.items()}
+
+    def group_repos(rs: list[str]) -> set[str]:
+        return set().union(*(unit_repos[r] for r in rs))
 
     def compatible(a: set[str], b: set[str]) -> bool:
         """Units that belong to different Jira projects (PAY vs AUTH) are never folded into one project by topic similarity."""
@@ -224,7 +240,7 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
     for r in order:
         best, score = None, 0.0
         for sd in seeds:
-            if not compatible(pre[r], set().union(*(pre[m] for m in members[sd]))):
+            if not compatible_repos(unit_repos[r], group_repos(members[sd])) or not compatible(pre[r], set().union(*(pre[m] for m in members[sd]))):
                 continue
             sc = cosine(cvec[r], cvec[sd])
             if sc > score or (sc == score and best is not None and sd < best):
@@ -254,13 +270,16 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
         for r in order:
             best, score = min(members), -1.0
             for g in sorted(cen):
-                if not compatible(pre[r], set().union(*(pre[m] for m in members[g]))):
+                if not compatible_repos(unit_repos[r], group_repos(members[g])) or not compatible(pre[r], set().union(*(pre[m] for m in members[g]))):
                     continue
                 sc = cosine(cvec[r], cen[g])
                 if sc > score:
                     best, score = g, sc
-            if score < 0:  # nothing compatible: stay where it was
+            if score < project_threshold:  # no sufficiently similar compatible group: stay where it was
                 best = next((g for g, rs in members.items() if r in rs), best)
+            if not compatible_repos(unit_repos[r], group_repos(new[best])):
+                best = r
+                new.setdefault(best, [])
             new[best].append(r)
         members = {g: rs for g, rs in new.items() if rs}
     cen = centroids(members)
@@ -268,7 +287,7 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
         if a not in members:
             continue
         for b in sorted(members):
-            if b != a and b in members and cosine(cen[a], cen[b]) >= 0.6 and compatible(
+            if b != a and b in members and compatible_repos(group_repos(members[a]), group_repos(members[b])) and cosine(cen[a], cen[b]) >= 0.6 and compatible(
                     set().union(*(pre[m] for m in members[a])), set().union(*(pre[m] for m in members[b]))):
                 members[a] += members.pop(b)
     # small leftovers from the same Jira project (a few PR+ticket pairs, 6 items or fewer per group) are one project, not several:
@@ -284,7 +303,8 @@ def link(items: list[Item], repo_aliases: dict[str, str] | None = None, topic_th
             by_pre[gpre(g)].append(g)
     for gs in by_pre.values():
         for other in gs[1:]:
-            members[gs[0]] += members.pop(other)
+            if compatible_repos(group_repos(members[gs[0]]), group_repos(members[other])):
+                members[gs[0]] += members.pop(other)
     clusters = defaultdict(list)
     for sd, rs in members.items():
         for r in rs:
