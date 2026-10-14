@@ -161,7 +161,7 @@ class PlatformStore:
             await self.store.aput(self.NS, "framework", {"f": profile["framework"]})  # prose framework -> expectations, by hash
         if profile.get("mapping"):
             await self.store.aput(self.NS, "mapping", {"m": profile["mapping"]})  # which evidence shows which expectation, by item content
-        marker = {k: profile[k] for k in ("cursors", "last_run", "backfill_done", "gaps") if k in profile}
+        marker = {k: profile[k] for k in ("cursors", "last_run", "backfill_done", "gaps", "coverage", "repo_scope", "source_selection") if k in profile}
         marker.update(schema=SCHEMA, n_items=len(rows))
         return {"marker": marker}
 
