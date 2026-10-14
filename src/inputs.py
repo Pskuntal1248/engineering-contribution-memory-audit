@@ -41,16 +41,16 @@ def parse_months(v: Any) -> int | None:
 
 
 def backfill_since(now: datetime, months: int) -> str:
-    """The start of the backfill window as YYYY-MM-DDTHH:MM:SSZ: `months` x 30 days before `now`. If that date cannot be represented the request is refused with a
-    clear error - it is never shortened to a nearer date and ingested as if it were the whole period."""
-    floor = datetime(1, 1, 1, tzinfo=timezone.utc)
-    try:
-        start = now - timedelta(days=30 * months)
-        if start < floor:
-            raise OverflowError
-    except OverflowError:
-        most = max(0, (now - floor).days // 30)
-        raise ValueError(f"backfill_months: {months} months reaches back past the earliest date this agent can compute (year 1); the most it can read back is {most} months") from None
+    """Subtract calendar months, clamp month-end, and refuse unrepresentable dates."""
+    import calendar
+    index = now.year * 12 + now.month - 1 - months
+    year, zero_month = divmod(index, 12)
+    if year < 1:
+        most = (now.year - 1) * 12 + now.month - 1
+        raise ValueError(f"backfill_months: {months} months reaches back past the earliest date this agent can compute (year 1); the most it can read back is {most} months")
+    month = zero_month + 1
+    start = now.replace(year=year, month=month, day=min(now.day, calendar.monthrange(year, month)[1]))
+    start = start.astimezone(timezone.utc)
     return f"{start.year:04d}-{start.month:02d}-{start.day:02d}T{start.hour:02d}:{start.minute:02d}:{start.second:02d}Z"
 
 
@@ -99,6 +99,11 @@ def validate_inputs(inp: dict) -> list[str]:
     for name in ("jira_projects", "slack_channels", "slack_user_ids", "redact_terms"):
         if name != "redact_terms" and ";" in str(inp.get(name) or ""):
             errs.append(f"{name}: separate entries with commas or new lines, not semicolons")
+    for repo in repo_entries(inp.get("exclude_repos")):
+        if not _REPO.match(repo):
+            errs.append(f"exclude_repos: {repo!r} must be an exact owner/repo")
+    if "*dm*" in str(inp.get("slack_channels") or "").lower():
+        errs.append("slack_channels: name each DM recipient or channel; all-DM wildcard is not allowed")
     tz = inp.get("timezone")
     if not _blank(tz):
         from zoneinfo import available_timezones
