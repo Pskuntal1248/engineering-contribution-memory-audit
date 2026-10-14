@@ -71,6 +71,7 @@ def _cfg(inp: dict) -> Config:
         username=user, repos=[r.strip() for r in str(inp.get("repos_or_org", "")).replace("\n", ",").split(",") if r.strip()],
         jira_site=str(inp.get("jira_site", "")), jira_projects=[p.strip().upper() for p in str(inp.get("jira_projects", "")).replace("\n", ",").split(",") if p.strip()],
         docs_sources=_docs_sources(str(inp.get("docs_source", ""))),
+        exclude_repos=[r.strip() for r in str(inp.get("exclude_repos", "")).replace("\n", ",").split(",") if r.strip()],
         slack_channels=parse_channels(str(inp.get("slack_channels", ""))), include_dms=str(inp.get("include_dms", "No")).lower() in {"yes", "true"},
         slack_user_ids=set(parse_channels(str(inp.get("slack_user_ids", "")))), name_hints=[user, *parse_channels(str(inp.get("display_name", "")))],
     )
@@ -113,18 +114,20 @@ def make_graph(deps: Deps):
                     inp["display_name"] = str(who["name"]).strip()
             else:
                 raise RuntimeError("Could not read your GitHub username from the connected GitHub account. Connect GitHub, or type your username in 'Your GitHub username' and run again.")
-        if deps.site and not str(inp.get("jira_site") or "").strip():  # (graph() always wires deps.site)
-            base = ""
-            if True:
-                try:
-                    base = str(await deps.site() or "").strip()
-                except Exception:  # noqa: BLE001
-                    base = ""
+        # Jira is optional. Only resolve its site when the user selected projects.
+        if deps.site and str(inp.get("request") or "") not in ON_DEMAND and inp.get("jira_projects") and not str(inp.get("jira_site") or "").strip():
+            try:
+                base = str(await deps.site() or "").strip()
+            except Exception as e:
+                from coverage import unavailable
+                if not unavailable(str(e)):
+                    raise RuntimeError("Could not verify the selected Jira connection; retry or check it") from e
+                base = ""
             if base.startswith("https://"):
                 inp["jira_site"] = base.rstrip("/")
                 id_notes.append(f"Jira site taken from the connected Jira account: {inp['jira_site']}")
             else:
-                raise RuntimeError("Could not read the Jira site from the connected Jira account. Connect Jira, or type the Jira site URL and run again.")
+                inp["_jira_unavailable"] = True
         if deps.store_factory:
             store = deps.store_factory(mem)
         else:
@@ -134,21 +137,25 @@ def make_graph(deps: Deps):
         req = str(inp.get("request") or "auto")
         if req == "weekly_update":
             req = "auto"  # the dropdown default: the first run backfills, every later run is the weekly update (new items only)
-        if not [c for c in parse_channels(str(inp.get("slack_channels") or ""))] and str(inp.get("include_dms") or "No").strip().lower() != "yes":
-            id_notes.append("no Slack channels were listed, so Slack was not read")
-        elif "*dm*" in str(inp.get("slack_channels") or "").lower() and str(inp.get("include_dms") or "No").strip().lower() != "yes":
-            id_notes.append("*dm* was listed but include_dms is No, so no DM was read")
         has_memory = bool(prior.get("items") or prior.get("last_run"))  # an empty but completed run still counts
         if req == "auto":
             req = "weekly" if prior.get("backfill_done") else "backfill"  # weekly only after a backfill really completed
         if req in ON_DEMAND and not has_memory:
             req = "backfill"  # nothing to report from yet
+        old_selection = prior.get("source_selection") or {}
+        if req == "weekly" and old_selection:
+            new_selection = {"jira": str(inp.get("jira_projects") or ""), "slack": str(inp.get("slack_channels") or ""), "docs": str(inp.get("docs_source") or "None")}
+            if any(value and value.lower() != "none" and (value != old_selection.get(key) or "isn't connected" in (prior.get("coverage") or {}).get(key, "")) for key, value in new_selection.items()):
+                req = "backfill"
+                id_notes.append("newly selected sources need their backfill; existing items remain deduplicated")
         return {"inputs": inp, "ctx": {"started": time.monotonic(), "mode": req, "prior": prior, "store": store, "notes": id_notes + (["memory was unreadable, starting fresh"] if prior.get("_corrupt") else (["the saved history was missing from the store, so this run backfills again"] if prior.get("_store_empty") else []))}}
 
     async def fetch(state: State) -> dict:
         ctx = state["ctx"]
         inp = state["inputs"]
         cfg = _cfg(inp)
+        if inp.get("_jira_unavailable"):
+            cfg.jira_projects = []
         ctx["cfg"], ctx["log"] = cfg, ToolLog()
         mode = ctx["mode"]
         if mode in ON_DEMAND:  # answers come from the saved profile, no source reads
@@ -161,7 +168,16 @@ def make_graph(deps: Deps):
         src: Source = deps.source_factory(cfg)
         if hasattr(src, "deadline"):  # detail reads stop early enough to leave the analysis its share of the run's time limit
             src.deadline = ctx.get("started", time.monotonic()) + MODE_LIMITS["backfill" if mode == "backfill" else "weekly"][1] * 0.73  # 73%: 22 min of 30 (backfill), 3.6 of 5 (weekly)
+        if hasattr(src, "configure_scope"):
+            src.configure_scope(cfg.exclude_repos, start, deps.now().isoformat().replace("+00:00", "Z"))
         ctx["raw"] = await src.fetch(since, None, ctx["log"])
+        if ctx["raw"].get("repo_scope"):
+            cfg.repos = ctx["raw"]["repo_scope"]["read"]
+        coverage = ctx["raw"].setdefault("coverage", {})
+        for source, selected in (("jira", cfg.jira_projects), ("slack", cfg.slack_channels or cfg.include_dms), ("docs", cfg.docs_sources)):
+            coverage.setdefault(source, "covered" if selected else {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}[source])
+        if inp.get("_jira_unavailable"):
+            coverage["jira"] = "isn't connected"
         return {"ctx": ctx}
 
     async def analyse(state: State) -> dict:
@@ -241,9 +257,25 @@ def make_graph(deps: Deps):
         quiet = quiet_week_line(since, local_now(inp).strftime("%Y-%m-%d")) if mode in {"weekly", "weekly_summary"} and not window else None
         title = {"backfill": "Engineering profile", "weekly": "Weekly update", "weekly_summary": "Weekly summary", "one_on_one": "1:1 talking points",
                  "review_material": "Review material", "interview_stories": "Interview stories", "evidence_gaps": "Evidence gaps"}[mode]
+        source_coverage = ctx["raw"].get("coverage") or ctx["prior"].get("coverage", {})
         corpus, result = outputs.corpus_for(mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
                                             colleagues=colleagues, names=names, date_from=str(inp.get("period_from", "") or ""), date_to=str(inp.get("period_to", "") or ""),
                                             run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label)
+        from coverage import line as coverage_line
+        source_coverage = ctx["raw"].get("coverage") or ctx["prior"].get("coverage", {})
+        from repo_scope import summary as scope_summary
+        scope = ctx["raw"].get("repo_scope") or ctx["prior"].get("repo_scope")
+        if scope:
+            scope_text = scope_summary(scope)
+            if mode == "interview_stories" and str(inp.get("keep_internal_details", "No")).lower() != "yes":
+                from guards import scrub
+                scope_text = scrub(scope_text, terms, False, False)
+            corpus["summary"] = scope_text + "\n\n" + corpus.get("summary", "")
+            result["repo_scope"] = scope
+        notice = coverage_line(source_coverage)
+        if notice:
+            corpus["summary"] = corpus.get("summary", "") + "\n\n" + notice
+        result["source_coverage"] = source_coverage
         result["model_diagnostics"] = list(getattr(deps.llm, "diagnostics", []))
         result["status"] = "completed"
         result["model_calls"] = ctx["budget"].calls  # every attempt on the wire: chat (retries included) plus embeddings (retries and failures included)
@@ -283,6 +315,9 @@ def make_graph(deps: Deps):
             "seen": sorted(set(prior.get("seen", [])) | {id_key(i.id) for i in items} | {id_key(m) for i in items for m in i.meta.get("merged_ids", [])}),
             "cursors": next_cursors(prior.get("cursors", {}), [i for i in items if i.source]),
             "verdicts": prof["verdicts"], "cards": prof["card_store"], "dverdicts": prof.get("dverdicts", {}), "last_run": local_now(inp).strftime("%Y-%m-%d"),
+            "source_selection": {"jira": str(inp.get("jira_projects") or ""), "slack": str(inp.get("slack_channels") or ""), "docs": str(inp.get("docs_source") or "None")},
+            "coverage": ctx["raw"].get("coverage", {}),
+            "repo_scope": ctx["raw"].get("repo_scope", {}),
             "backfill_done": bool(prior.get("backfill_done")) or ctx["mode"] == "backfill",
             "gaps": [{"id": g["id"], "status": g["status"]} for g in prof["gaps"]],
         }
@@ -342,4 +377,3 @@ async def graph():
         return GatewaySource(call, cfg.username, cfg.repos, cfg.slack_channels, cfg.include_dms, cfg.jira_projects, has, cfg.docs_sources, cfg.name_hints)
 
     return make_graph(Deps(source_factory, llm, embedder=embedder, identity=identity, site=site))
-
