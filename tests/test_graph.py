@@ -10,7 +10,7 @@ from store import NativeMemoryStore, unpack
 
 D = fixtures.build()
 E = D["expected"]
-INP = {"github_username": fixtures.USER, "repos_or_org": "acme/payments-api, acme/web", "jira_site": fixtures.SITE, "jira_projects": "PAY, WEB",
+INP = {"docs_source": "Confluence", "github_username": fixtures.USER, "repos_or_org": "acme/payments-api, acme/web", "jira_site": fixtures.SITE, "jira_projects": "PAY, WEB",
        "slack_channels": "#payments-eng, #incidents, #web-platform, #random, #design, #oncall, #standup, #releases, #help-eng, #data, #security, #ops",
        "include_dms": "No", "display_name": "Meera Joshi", "slack_user_ids": fixtures.ME, "role_and_level": "Software Engineer II", "review_framework": E["ladder_text"],
        "redact_terms": "Globex Foods, Initech Pay", "backfill_months": 6}
