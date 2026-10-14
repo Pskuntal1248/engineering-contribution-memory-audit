@@ -1,7 +1,7 @@
 contract: v1
 name: engineering-contribution-memory
 version: 0.1.3
-description: Reads the last 6 months of your GitHub, Jira, Slack and docs and keeps an evidence-linked engineering profile. It links shipped work into projects, shows invisible work like reviews and on-call, evidences gaps against your career ladder, and gives weekly summaries, 1:1 points, review material and interview stories on demand from the saved profile. A Friday 5 PM IST run (changeable) adds the week's new items; the timezone input sets report dates.
+description: Reads the last 6 months of your GitHub, Jira, Slack and docs and keeps an evidence-linked engineering profile. It links shipped work into projects, shows invisible work like reviews and on-call, evidences gaps against your career ladder, and gives weekly summaries, 1:1 points, review material and interview stories on demand from the saved profile. The weekly run is Friday 17:00 IST (changeable) and adds the week's new items; the timezone input sets report dates.
 kind: monitor
 
 runtime:
@@ -18,88 +18,92 @@ inputs:
     type: text
     label: "Your GitHub username (optional: read from your connected GitHub account when blank)"
     required: false
-  - name: repos_or_org
-    type: textarea
-    label: "Repos to read (owner/repo, comma separated)"
-    required: true
-  - name: jira_site
-    type: url
-    label: "Jira site URL (optional: read from your connected Jira when blank)"
-    required: false
-  - name: jira_projects
-    type: textarea
-    label: "Jira project keys, comma separated"
-    required: true
-  - name: slack_channels
-    type: textarea
-    label: "Slack channels to read (public or ones you opt in), comma separated"
-    required: true
-  - name: include_dms
-    type: static-dropdown
-    label: "Include DMs? (default No). With Yes, only the DMs you list in the channels box are read (a person's Slack user ID), or write *dm* to opt in to all. Private channels are read only when you list them"
-    options: ["No", "Yes"]
-    default: "No"
-    required: false
-  - name: display_name
-    type: text
-    label: "Your name as it appears in Jira, Slack and docs (optional: taken from GitHub when blank)"
-    required: false
-  - name: slack_user_ids
-    type: text
-    label: "Your Slack user ID(s), comma separated"
-    required: false
-  - name: docs_source
-    type: static-dropdown
-    label: "Docs source (pick the ones you use; each must be connected)"
-    options: ["None", "Confluence", "Notion", "Google Drive", "Confluence + Notion", "Confluence + Google Drive", "Notion + Google Drive", "All three"]
-    default: "None"
-    required: false
-  - name: backfill_months
-    type: number
-    label: "Months to backfill on the first run"
-    default: 6
-    required: false
   - name: role_and_level
     type: text
     label: "Your role and level (e.g. Software Engineer II, Payments)"
     required: true
-  - name: review_framework
-    type: textarea
-    label: "Career ladder / review framework text (optional; enables evidence gaps)"
-    required: false
-  - name: team_changes
-    type: textarea
-    label: "Team changes in the period (optional), one per line: YYYY-MM-DD: Team name"
-    required: false
   - name: request
     type: static-dropdown
     label: "What to produce (weekly_update = first run backfills, then new items each week; the scheduled run uses this)"
     options: ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"]
     default: "weekly_update"
     required: false
+  - name: repos_or_org
+    type: textarea
+    label: "Advanced: Repos to read (owner/repo, comma separated)"
+    required: false
+  - name: jira_site
+    type: url
+    label: "Advanced: Jira site URL (optional: read from your connected Jira when blank)"
+    required: false
+  - name: jira_projects
+    type: textarea
+    label: "Advanced: Jira project keys, comma separated"
+    required: false
+  - name: slack_channels
+    type: textarea
+    label: "Advanced: Slack channels to read (public or ones you opt in), comma separated"
+    required: false
+  - name: include_dms
+    type: static-dropdown
+    label: "Advanced: Include DMs? No by default. With Yes, name each DM recipient or channel ID in Slack channels. Private channels must also be named."
+    options: ["No", "Yes"]
+    default: "No"
+    required: false
+  - name: display_name
+    type: text
+    label: "Advanced: Your name as it appears in Jira, Slack and docs (optional: taken from GitHub when blank)"
+    required: false
+  - name: slack_user_ids
+    type: text
+    label: "Advanced: Your Slack user ID(s), comma separated"
+    required: false
+  - name: docs_source
+    type: static-dropdown
+    label: "Advanced: Docs source (pick the ones you use; each must be connected)"
+    options: ["None", "Confluence", "Notion", "Google Drive", "Confluence + Notion", "Confluence + Google Drive", "Notion + Google Drive", "All three"]
+    default: "None"
+    required: false
+  - name: backfill_months
+    type: number
+    label: "Advanced: Months to backfill on the first run"
+    default: 6
+    required: false
+  - name: review_framework
+    type: textarea
+    label: "Advanced: Career ladder / review framework text (optional; enables evidence gaps)"
+    required: false
+  - name: team_changes
+    type: textarea
+    label: "Advanced: Team changes in the period (optional), one per line: YYYY-MM-DD: Team name"
+    required: false
   - name: period_from
     type: date
-    label: "Review material: from (the two dates decide the period)"
+    label: "Advanced: Review material: from (the two dates decide the period)"
     required: false
   - name: period_to
     type: date
-    label: "Review material: to"
+    label: "Advanced: Review material: to"
     required: false
   - name: redact_terms
     type: textarea
-    label: "Customer or internal names to strip from interview stories, comma separated"
+    label: "Advanced: Customer or internal names to strip from interview stories, comma separated"
     required: false
   - name: keep_internal_details
     type: static-dropdown
-    label: "Keep internal names and figures in interview stories?"
+    label: "Advanced: Keep internal names and figures in interview stories?"
     options: ["No", "Yes"]
     default: "No"
     required: false
   - name: timezone
     type: static-dropdown
-    label: "Your timezone"
+    label: "Advanced: Your timezone, used for date ranges only; schedules run in IST"
     options: ["Asia/Kolkata", "UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney"]
     default: "Asia/Kolkata"
+    required: false
+  - name: exclude_repos
+    type: textarea
+    label: "Advanced: Repos to exclude (owner/repo, comma separated)"
     required: false
 
 permissions:
@@ -110,10 +114,13 @@ permissions:
     - github.list_pr_files
     - github.list_pr_reviews
     - github.list_commits
+    - github.list_branches
     - github.get_commit
     - github.list_commits_on_a_pull_request
     - github.list_organization_repositories
     - github.list_repositories_for_a_user
+    - github.list_repositories_for_the_authenticated_user
+    - github.list_organizations_for_the_authenticated_user
     - jira.search_issues
     - jira.get_all_projects
     - jira.get_server_info
