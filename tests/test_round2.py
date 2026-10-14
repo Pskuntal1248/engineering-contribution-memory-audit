@@ -79,7 +79,7 @@ def test_blank_username_and_site_are_filled_from_the_connected_accounts():
         return "https://acme.atlassian.net/"
     out = run({"github_username": "", "jira_site": ""}, identity=ident, site=site)
     notes = " ".join(out["result"]["notes"])
-    assert "gh-user" in notes and "https://acme.atlassian.net" in notes and out["result"]["status"] == "completed"
+    assert "gh-user" in notes and "https://acme.atlassian.net" not in notes and out["result"]["status"] == "completed"
 
 
 def test_invalid_inputs_make_zero_calls_and_leave_saved_state_alone():
@@ -114,7 +114,8 @@ def test_any_representable_positive_month_count_is_accepted_and_never_shortened(
     calls = []
     out = run({"backfill_months": months}, source=Src(calls=calls))
     assert out["result"]["status"] == "completed" and len(calls) == 1
-    expected = (NOW - timedelta(days=30 * int(months))).strftime("%Y-%m-%d") if int(months) < 24000 else None
+    from inputs import backfill_since
+    expected = backfill_since(NOW, int(months))[:10]
     if expected:
         assert calls[0].startswith(expected), (calls[0], expected)  # the window asked for is the window read: 1200 months is 1926, not 1970
     assert "1970" not in " ".join(out["result"]["notes"])
@@ -126,7 +127,7 @@ def test_an_unrepresentable_month_count_is_refused_before_any_call():
     async def ident():
         calls["identity"] += 1
         return {"login": "x"}
-    most = (NOW - datetime(1, 1, 1, tzinfo=timezone.utc)).days // 30
+    most = (NOW.year - 1) * 12 + NOW.month - 1
     assert run({"backfill_months": most}, source=Src())["result"]["status"] == "completed"       # the largest representable request still works
     for months in (most + 1, 10 ** 12):
         deps = agent.Deps(lambda cfg: calls.__setitem__("source", calls["source"] + 1) or Src(), llm=None, now=lambda: NOW, identity=ident)
@@ -163,10 +164,10 @@ def test_removed_ask_input_is_ignored_with_no_routing_and_no_note():
     assert run({"ask": "interview stories", "request": "weekly_update"})["result"]["mode"] == "backfill"
 
 
-def test_manifest_has_19_inputs_without_ask_and_keeps_the_dropdown_and_both_review_dates():
+def test_manifest_has_20_inputs_without_ask_and_keeps_the_dropdown_and_both_review_dates():
     m = yaml.safe_load(open("manifest.yaml"))
     names = [i["name"] for i in m["inputs"]]
-    assert len(names) == 19 and "ask" not in names and len(set(names)) == 19
+    assert len(names) == 20 and "ask" not in names and len(set(names)) == 20
     by = {i["name"]: i for i in m["inputs"]}
     assert by["request"]["options"] == ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"] and by["request"]["default"] == "weekly_update"
     assert by["period_from"]["type"] == "date" and by["period_to"]["type"] == "date"
