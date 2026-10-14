@@ -85,6 +85,7 @@ class GatewaySource:
     def __init__(self, call: Call, username: str, repos: list[str], slack_channels: list[str], include_dms: bool,
                  jira_projects: list[str], has: set[str], docs_sources: list[str] | None = None, names: list[str] | None = None):
         self.names = names or []
+        self.scope_settings = None
         self.docs_sources = [d.lower() for d in (docs_sources or [])]
         gate = asyncio.Semaphore(PARALLEL)  # one limit for every source running side by side
 
@@ -100,25 +101,50 @@ class GatewaySource:
         self.call, self.username, self.repos = limited, username, repos
         self.slack_channels, self.include_dms, self.jira_projects, self.has = slack_channels, include_dms, jira_projects, has
 
+    def configure_scope(self, exclude_repos, window_start, window_end):
+        self.scope_settings = (exclude_repos, window_start, window_end)
+
     async def fetch(self, since: str, until: str | None, log: ToolLog) -> dict[str, Any]:
-        out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": []}
+        out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": [], "coverage": {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}}
         import adapters
 
+        if self.scope_settings:
+            exclusions, window_start, window_end = self.scope_settings
+            if self.repos:
+                # Explicit names/org overrides retain their existing expansion, but
+                # no default account discovery or commit filter is used.
+                pass
+            else:
+                from repo_scope import discover
+                try:
+                    self.repos, out["repo_scope"], issues = await discover(self.call, self.username, window_start, window_end, exclusions, log)
+                    out["failed"].extend(issues)
+                except Exception as e:
+                    out["failed"].append({"source": "github-discovery", "error": "repository scope could not be verified: " + err_text(e, 200)})
+                    out["blocked"] = True
+                    return out
         chans, picked, projects, verified = await self._preflight(out, log)
+        if self.scope_settings and "repo_scope" not in out:
+            excluded = {r.lower() for r in self.scope_settings[0]}
+            omitted = [r for r in self.repos if r.lower() in excluded]
+            self.repos = [r for r in self.repos if r.lower() not in excluded]
+            out["repo_scope"] = {"mode": "allow-list", "read": list(self.repos), "excluded": omitted, "no_commits": [], "unverified": []}
         if not verified:  # check every named source BEFORE doing any work: one bad input stops the whole read
             out["failed"].append({"source": "preflight", "error": "one or more configured sources could not be verified, so no contribution data was read at all. Fix the inputs above and rerun."})
             out["blocked"] = True
             return out
 
         async def slack_part() -> None:
-            if self.slack_channels or self.include_dms:  # no Slack call at all unless the user named channels
+            if picked:
                 await self._slack(out, since, log, picked)
 
         async def jira_part() -> None:
+            if not projects:
+                return
             if "jira.search_issues" in self.has:
                 await adapters.fetch_jira(self.call, projects, since, log, out)
             else:
-                out["failed"].append({"source": "jira", "error": "jira.search_issues is not available in this run"})
+                out["coverage"]["jira"] = "isn't available in this run"
 
         async def doc_part(src_name: str, tool: str, fn: Any) -> None:
             if not any(src_name in d or (src_name == "google drive" and "drive" in d) for d in self.docs_sources):
@@ -139,8 +165,24 @@ class GatewaySource:
             out["failed"] = [f for f in out["failed"] if "fetch time limit" not in str(f.get("error"))]
             out["capped"].append(f"time limit: stopped reading sources early, {self.skipped} detail reads (PR files, reviews, ticket history, Slack threads, pages) were not done; "
                                  "the items found by the list reads are still included. Narrow backfill_months or run again to cover the rest")
-        if not self.docs_sources:
-            out["failed"].append({"source": "docs", "error": "no docs source chosen (set docs_source to Confluence, Notion or Google Drive)"})
+        if out.get("repo_scope"):
+            broken = {f["source"].split(":", 1)[1] for f in out["failed"] if str(f["source"]).startswith("github:")}
+            scope = out["repo_scope"]
+            scope["read"] = [r for r in scope["read"] if r not in broken]
+            scope["unverified"] = sorted(set(scope.get("unverified", [])) | broken)
+        from coverage import unavailable
+        selections = {"jira": bool(projects), "slack": bool(picked), "docs": bool(self.docs_sources)}
+        for source, selected in selections.items():
+            if not selected:
+                continue
+            errors = [f for f in out["failed"] if str(f.get("source", "")).startswith(source)]
+            if errors and all(unavailable(f.get("error", "")) for f in errors):
+                out["failed"] = [f for f in out["failed"] if f not in errors]
+                out["coverage"][source] = "isn't connected or available"
+            elif errors:
+                out["coverage"][source] = "some selected reads failed"
+            elif "isn't" not in out["coverage"].get(source, ""):
+                out["coverage"][source] = "covered"
         return out
 
     async def _preflight(self, out: dict, log: ToolLog) -> tuple[list[dict], list[dict], list[str], bool]:
@@ -161,8 +203,12 @@ class GatewaySource:
                 chans = await self._list_channels(log)
                 out["slack"]["channels"] = chans
             except Exception as e:  # noqa: BLE001 - the channel list itself is unreadable: every channel input is unverified
-                out["failed"].append({"source": "slack", "error": "the channel list could not be read, so the configured channels could not be verified: " + err_text(e, 200)})
-                ok = False
+                from coverage import unavailable
+                if unavailable(str(e)):
+                    out["coverage"]["slack"] = "isn't connected"
+                else:
+                    out["failed"].append({"source": "slack", "error": "the channel list could not be read, so the configured channels could not be verified: " + err_text(e, 200)})
+                    ok = False
             else:
                 picked, missing = channels_to_read(chans, self.slack_channels, self.include_dms, log)
                 visible = sorted(str(c.get("name", "")) for c in chans if not is_dm_channel(c) and c.get("name"))
@@ -186,15 +232,23 @@ class GatewaySource:
                     ok = False
         if self.jira_projects:
             if "jira.get_all_projects" not in self.has:
-                out["failed"].append({"source": "jira-preflight", "error": "the configured project keys could not be verified (jira.get_all_projects is not available in this run). Fix the tool declaration or the connection and rerun."})
-                ok = False
+                projects = []
+                out["coverage"]["jira"] = "isn't available in this run"
             else:
                 try:
                     log.add("jira.get_all_projects")
-                    seen = adapters.rows(await self.call("jira.get_all_projects", {"max_results": 200}), "values", "projects", "results")
+                    response = await self.call("jira.get_all_projects", {"max_results": 200})
+                    if bad := adapters.failed_payload(response):
+                        raise RuntimeError(bad)
+                    seen = adapters.rows(response, "values", "projects", "results")
                 except Exception as e:  # noqa: BLE001 - an auth refusal means the keys are unverified, not safe
-                    out["failed"].append({"source": "jira-preflight", "error": "the configured project keys could not be verified: " + err_text(e, 120)})
-                    ok = False
+                    from coverage import unavailable
+                    if unavailable(str(e)):
+                        projects = []
+                        out["coverage"]["jira"] = "isn't connected"
+                    else:
+                        out["failed"].append({"source": "jira-preflight", "error": "the configured project keys could not be verified: " + err_text(e, 120)})
+                        ok = False
                 else:
                     canon = {str(p.get("key", "")).upper(): str(p.get("key", "")) for p in seen if p.get("key")}
                     canon = {k: v for k, v in canon.items() if k}
@@ -393,6 +447,17 @@ class GatewaySource:
         try:
             log.add("github.list_commits", repo=repo)
             rows = await self._paged("github.list_commits", {"owner": owner, "repo": name, "author": self.username, "since": since}, ("commits",), MAX_COMMITS_PER_REPO)
+            if self.scope_settings and "github.list_branches" in self.has:
+                from repo_scope import pages
+                branches = await pages(self.call, "github.list_branches", {"owner": owner, "repo": name}, ("branches",))
+                by_sha = {str(c.get("sha")): c for c in rows if c.get("sha")}
+                for branch in branches:
+                    ref = str(branch.get("name") or "")
+                    if not ref:
+                        raise RuntimeError("branch name could not be verified")
+                    more = await self._paged("github.list_commits", {"owner": owner, "repo": name, "author": self.username, "since": since, "sha": ref}, ("commits",), MAX_COMMITS_PER_REPO)
+                    by_sha.update({str(c.get("sha")): c for c in more if c.get("sha")})
+                rows = list(by_sha.values())
         except Exception as e:  # noqa: BLE001 - named in the result
             out["failed"].append({"source": f"github-commits:{repo}", "error": err_text(e, 200)})
             return
@@ -444,6 +509,8 @@ class GatewaySource:
             if cursor:
                 args["cursor"] = cursor
             resp = await self.call("slack.list_channels", args)
+            if bad := adapters.failed_payload(resp):
+                raise RuntimeError(bad)
             chans += _rows(resp, "channels")
             cursor = str(adapters.find_key(resp, "next_cursor") or "")
             if not cursor:
@@ -469,4 +536,3 @@ class GatewaySource:
                     out["slack"]["threads"].append({"channel": ch.get("name", ""), "channel_id": ch["id"], "messages": ms})
         except Exception as e:  # noqa: BLE001
             out["failed"].append({"source": "slack", "error": err_text(e, 200)})
-
