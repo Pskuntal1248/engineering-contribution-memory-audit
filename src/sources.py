@@ -84,6 +84,7 @@ class GatewaySource:
     def __init__(self, call: Call, username: str, repos: list[str], slack_channels: list[str], include_dms: bool,
                  jira_projects: list[str], has: set[str], docs_sources: list[str] | None = None, names: list[str] | None = None):
         self.names = names or []
+        self.allow_non_github_scope = False
         self.scope_settings = None
         self.docs_sources = [d.lower() for d in (docs_sources or [])]
         gate = asyncio.Semaphore(PARALLEL)  # one limit for every source running side by side
@@ -117,23 +118,19 @@ class GatewaySource:
         out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": [], "coverage": {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}}
         import adapters
 
+        from inputs import repo_entries, _REPO
+        if (not self.repos and not self.allow_non_github_scope) or any(not _REPO.fullmatch(r) for r in self.repos):
+            out["failed"].append({"source": "github-scope", "error": "Select explicit owner/repo entries. Automatic account/org discovery is disabled; no contribution data was read."})
+            out["blocked"] = True
+            return out
+        self.repos = list(dict.fromkeys(r.lower() for r in self.repos))
         if self.scope_settings:
-            exclusions, window_start, window_end = self.scope_settings
-            if self.repos:
-                # Explicit names/org overrides retain their existing expansion, but
-                # no default account discovery or commit filter is used.
-                pass
-            else:
-                from repo_scope import discover
-                try:
-                    self.repos, out["repo_scope"], issues = await discover(self.call, self.username, window_start, window_end, exclusions, log, metadata=self.repo_metadata)
-                    out["failed"].extend(issues)
-                    if issues:
-                        out["github_incomplete"] = True
-                except Exception as e:
-                    out["failed"].append({"source": "github-discovery", "error": "repository scope could not be verified: " + err_text(e, 200)})
-                    out["blocked"] = True
-                    return out
+            excluded = {r.lower() for r in self.scope_settings[0]}
+            self.repos = [r for r in self.repos if r.lower() not in excluded]
+            if not self.repos and not self.allow_non_github_scope:
+                out["failed"].append({"source": "github-scope", "error": "All selected repositories are excluded; no contribution data was read."})
+                out["blocked"] = True
+                return out
         chans, picked, projects, verified = await self._preflight(out, log)
         if self.scope_settings and "repo_scope" not in out:
             excluded = {r.lower() for r in self.scope_settings[0]}
@@ -177,7 +174,7 @@ class GatewaySource:
             out["capped"].append(f"time limit: stopped reading sources early, {self.skipped} detail reads (PR files, reviews, ticket history, Slack threads, pages) were not done; "
                                  "the items found by the list reads are still included. Narrow backfill_months or run again to cover the rest")
         if out.get("repo_scope"):
-            broken = {f["source"].split(":", 1)[1] for f in out["failed"] if str(f["source"]).startswith("github:")}
+            broken = {f["source"].split(":", 1)[1] for f in out["failed"] if str(f["source"]).startswith(("github:", "github-commits:"))}
             scope = out["repo_scope"]
             scope["read"] = [r for r in scope["read"] if r not in broken]
             scope["unverified"] = sorted(set(scope.get("unverified", [])) | broken)
@@ -315,52 +312,13 @@ class GatewaySource:
         return "404" in t or "not found" in t
 
     async def _expand_repos(self, out: dict, log: ToolLog) -> bool:
-        """owner/repo entries stay as they are; a bare name is listed as an organisation, and only if that is confirmed not to be one, as a user. The expanded list replaces self.repos."""
-        expanded: list[str] = []
-        have: set[str] = set()
-        ok = True
-        for entry in self.repos:
-            if "/" in entry:
-                if entry.lower() not in have:
-                    have.add(entry.lower())
-                    expanded.append(entry)
-                continue
-            found: list[str] = []
-            public_only = False
-            error = ""
-            if "github.list_organization_repositories" not in self.has:
-                error = "github.list_organization_repositories is not available in this run"
-            else:
-                try:
-                    found = await self._owner_repos("github.list_organization_repositories", {"org": entry}, log)
-                    if not found:
-                        error = f"{entry!r} is an organisation the connected account can see, but it lists no repositories"
-                except Exception as e:  # noqa: BLE001
-                    if self._confirmed_not_org(e):
-                        if "github.list_repositories_for_a_user" not in self.has:
-                            error = f"{entry!r} is not an organisation and github.list_repositories_for_a_user is not available in this run"
-                        else:
-                            try:
-                                found, public_only = await self._owner_repos("github.list_repositories_for_a_user", {"username": entry}, log), True
-                                if not found:
-                                    error = f"{entry!r} is a user with no public repositories"
-                            except Exception as e2:  # noqa: BLE001
-                                error = f"{entry!r} is not an organisation, and listing it as a user failed: {err_text(e2, 160)}"
-                    else:
-                        error = f"listing {entry!r} as an organisation failed (not treated as 'not an organisation'): {err_text(e, 200)}"
-            if not found:
-                out["failed"].append({"source": f"github-owner:{entry}", "error": error + ". No repository of it was read. Use owner/repo to name a repository."})
-                ok = False
-                continue
-            added = [r for r in found if r.lower() not in have]
-            have |= {r.lower() for r in added}
-            expanded += added
-            out.setdefault("info", []).append(
-                f"{entry!r} was expanded to {len(found)} repositories ({len(added)} not already listed)"
-                + (": this is the user's PUBLIC repositories only (the user listing tool lists public repositories), so private repositories are not covered - name them as owner/repo" if public_only
-                   else ", as far as the connected account can list them (completeness for private repositories is not claimed)"))
-        self.repos = expanded
-        return ok
+        """Explicit multi-repo selection only. Never list an account or organization."""
+        from inputs import _REPO
+        if not self.repos or any(not _REPO.fullmatch(r) for r in self.repos):
+            out["failed"].append({"source": "github-scope", "error": "Select explicit owner/repo entries; account/org expansion is disabled."})
+            return False
+        self.repos = list(dict.fromkeys(r.lower() for r in self.repos))
+        return True
 
     async def _paged(self, tool: str, args: dict, keys: tuple[str, ...], cap: int, since: str | None = None) -> list[dict]:
         """All pages of a GitHub list tool (default page size is 30, so one call silently dropped everything past it). Stops on a short page,
