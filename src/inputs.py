@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-REQUESTS = ("weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps")
+REQUESTS = ("update_source_setup", "enrich_new_scopes", "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps")
 DOCS_PARTS = {"none", "confluence", "notion", "google drive"}
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a bare GitHub organisation or user name
@@ -90,12 +90,14 @@ def validate_inputs(inp: dict) -> list[str]:
             m = _TEAM_LINE.match(line)
             if not m or _iso(m.group(1)) is None:
                 errs.append(f"team_changes line {n}: {line.strip()!r} must look like YYYY-MM-DD: Team name, with a real date")
+    if not repo_entries(inp.get("repos_or_org")):
+        errs.append("repos_or_org: select at least one explicit owner/repo; automatic account/org discovery is disabled")
     if ";" in str(inp.get("repos_or_org") or ""):
         errs.append("repos_or_org: separate entries with commas or new lines, not semicolons")
     else:
         for t in repo_entries(inp.get("repos_or_org")):
-            if not (_REPO.match(t) or _OWNER.match(t)):
-                errs.append(f"repos_or_org: {t!r} is not owner/repo or a bare organisation or user name")
+            if not _REPO.fullmatch(t):
+                errs.append(f"repos_or_org: {t!r} must be an explicit owner/repo; bare account/org names are not expanded")
     for name in ("jira_projects", "slack_channels", "slack_user_ids", "redact_terms"):
         if name != "redact_terms" and ";" in str(inp.get(name) or ""):
             errs.append(f"{name}: separate entries with commas or new lines, not semicolons")
