@@ -24,13 +24,17 @@ inputs:
     required: true
   - name: request
     type: static-dropdown
-    label: "What to produce (weekly_update = first run backfills, then new items each week; the scheduled run uses this)"
-    options: ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"]
+    label: "What to produce (weekly_update = initial backfill, then incremental; setup edits save only, enrich_new_scopes reads new selections separately)"
+    options: ["update_source_setup", "enrich_new_scopes", "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"]
     default: "weekly_update"
     required: false
   - name: repos_or_org
     type: textarea
-    label: "Advanced: Repos to read (owner/repo, comma separated)"
+    label: "Repos to read (required: owner/repo, comma or newline separated; multiple allowed)"
+    required: true
+  - name: setup_revision
+    type: text
+    label: "Advanced: Current source setup revision (required only to replace existing setup; blank/None sources disable them on that action)"
     required: false
   - name: jira_site
     type: url
@@ -117,10 +121,6 @@ permissions:
     - github.list_branches
     - github.get_commit
     - github.list_commits_on_a_pull_request
-    - github.list_organization_repositories
-    - github.list_repositories_for_a_user
-    - github.list_repositories_for_the_authenticated_user
-    - github.list_organizations_for_the_authenticated_user
     - jira.search_issues
     - jira.get_all_projects
     - jira.get_server_info
