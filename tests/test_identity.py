@@ -48,6 +48,5 @@ def test_blank_jira_site_comes_from_account_and_failure_is_clear():
 
     async def nosite():
         return ""
-    with pytest.raises(RuntimeError, match="Could not read the Jira site"):
-        run({**INP, "jira_site": ""}, None, site=nosite)
-
+    out = run({**INP, "jira_site": ""}, None, site=nosite)
+    assert "Not covered:" in out["corpus"]["summary"] and out["result"]["status"] == "completed"
