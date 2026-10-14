@@ -24,17 +24,17 @@ inputs:
     required: true
   - name: request
     type: static-dropdown
-    label: "What to produce (weekly_update = initial backfill, then incremental; setup edits save only, enrich_new_scopes reads new selections separately)"
-    options: ["update_source_setup", "enrich_new_scopes", "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"]
+    label: "Report (new source details are saved and added automatically; weekly_update updates the profile)"
+    options: ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"]
     default: "weekly_update"
     required: false
   - name: repos_or_org
     type: textarea
     label: "Repos to read (required: owner/repo, comma or newline separated; multiple allowed)"
     required: true
-  - name: setup_revision
+  - name: remove_sources
     type: text
-    label: "Advanced: Current source setup revision (required only to replace existing setup; blank/None sources disable them on that action)"
+    label: "Advanced: Stop reading sources (optional: Jira, Slack, Docs or DMs; blank keeps saved sources; named sources stop being read)"
     required: false
   - name: jira_site
     type: url
@@ -53,10 +53,6 @@ inputs:
     label: "Advanced: Include DMs? No by default. With Yes, name each DM recipient or channel ID in Slack channels. Private channels must also be named."
     options: ["No", "Yes"]
     default: "No"
-    required: false
-  - name: display_name
-    type: text
-    label: "Advanced: Your name as it appears in Jira, Slack and docs (optional: taken from GitHub when blank)"
     required: false
   - name: slack_user_ids
     type: text
@@ -104,10 +100,6 @@ inputs:
     label: "Advanced: Your timezone, used for date ranges only; schedules run in IST"
     options: ["Asia/Kolkata", "UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney"]
     default: "Asia/Kolkata"
-    required: false
-  - name: exclude_repos
-    type: textarea
-    label: "Advanced: Repos to exclude (owner/repo, comma separated)"
     required: false
 
 permissions:
