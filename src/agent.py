@@ -170,7 +170,7 @@ def make_graph(deps: Deps):
             src.deadline = ctx.get("started", time.monotonic()) + MODE_LIMITS["backfill" if mode == "backfill" else "weekly"][1] * 0.73  # 73%: 22 min of 30 (backfill), 3.6 of 5 (weekly)
         if hasattr(src, "configure_scope"):
             src.configure_scope(cfg.exclude_repos, start, deps.now().isoformat().replace("+00:00", "Z"))
-        ctx["raw"] = await src.fetch(since, None, ctx["log"])
+        ctx["raw"] = await src.fetch(since, deps.now().isoformat().replace("+00:00", "Z"), ctx["log"])
         if ctx["raw"].get("repo_scope"):
             cfg.repos = ctx["raw"]["repo_scope"]["read"]
         coverage = ctx["raw"].setdefault("coverage", {})
@@ -325,6 +325,10 @@ def make_graph(deps: Deps):
             profile["framework"] = prof.get("framework_cache") or prior.get("framework")
         if prof.get("mapping_cache") or prior.get("mapping"):
             profile["mapping"] = prof.get("mapping_cache") or prior.get("mapping")
+        if ctx["raw"].get("github_incomplete"):
+            # Newest observed item is not proof that older pages were covered.
+            profile["cursors"]["github"] = (prior.get("cursors") or {}).get("github", "")
+            profile["backfill_done"] = bool(prior.get("backfill_done"))
         store = ctx["store"]
         memory = await store.adump(profile) if hasattr(store, "adump") else store.dump(profile)
         # memory is written only here, after the work above succeeded
