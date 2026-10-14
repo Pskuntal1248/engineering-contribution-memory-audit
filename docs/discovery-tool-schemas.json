@@ -1,0 +1,468 @@
+[
+  {
+    "name": "github.list_commits",
+    "description": "list commits on a repository branch, filterable by date range, author or path",
+    "parameters": {
+      "type": "object",
+      "title": "ListCommitsRequest",
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "properties": {
+        "sha": {
+          "type": "string",
+          "title": "Sha",
+          "examples": [
+            "main",
+            "develop",
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          ],
+          "description": "SHA hash or branch name to start listing commits from. If not provided, the GitHub API uses the repository's default branch (usually `main` or `master`). Please provide a value of type string.",
+          "human_parameter_name": "Commit SHA or Branch",
+          "human_parameter_description": "The branch name or a specific commit SHA to list commits from. Leave this blank to use the repository's default branch."
+        },
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "default": 1,
+          "examples": [
+            "1",
+            "2"
+          ],
+          "description": "Page number of the results to fetch when using pagination. Please provide a value of type integer.",
+          "human_parameter_name": "Page number",
+          "human_parameter_description": "Which page of results to view when there are many commits. Start with 1 for the first page."
+        },
+        "path": {
+          "type": "string",
+          "title": "Path",
+          "examples": [
+            "README.md",
+            "src/utils/helpers.py"
+          ],
+          "description": "Only commits modifying this specific file path will be returned. Please provide a value of type string.",
+          "human_parameter_name": "File path",
+          "human_parameter_description": "Limit results to commits that changed a particular file or folder path. Helpful when tracking changes to a specific file."
+        },
+        "repo": {
+          "type": "string",
+          "title": "Repo",
+          "pattern": "^[a-zA-Z0-9._-]+$",
+          "examples": [
+            "Spoon-Knife",
+            "my-project"
+          ],
+          "description": "The name of the repository without the `.git` extension (repository name only, not the full 'owner/repo' path). Must contain only alphanumeric characters, hyphens (-), underscores (_), and periods (.). Wildcards like '*' are not supported. Please provide a value of type string. This parameter is required.",
+          "human_parameter_name": "Repository name",
+          "human_parameter_description": "The repository you want to view commits for, without the .git extension (just the repo name, not 'owner/repo'). It's the project name, like 'Spoon-Knife'."
+        },
+        "owner": {
+          "type": "string",
+          "title": "Owner",
+          "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$|^[a-zA-Z0-9]$",
+          "examples": [
+            "octocat",
+            "my-organization"
+          ],
+          "description": "The account owner of the repository (username or organization name only, not the full 'owner/repo' path). Must contain only alphanumeric characters and hyphens, cannot start/end with a hyphen, max 39 characters. Wildcards are not supported. Please provide a value of type string. This parameter is required.",
+          "human_parameter_name": "Account owner",
+          "human_parameter_description": "The username or organization that owns the repository (just the owner name, not 'owner/repo'). For example, 'octocat' or your org's name."
+        },
+        "since": {
+          "type": "string",
+          "title": "Since",
+          "examples": [
+            "2023-01-01T00:00:00Z"
+          ],
+          "description": "Only commits created on or after this timestamp will be returned. This is a timestamp in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`. Please provide a value of type string.",
+          "human_parameter_name": "Start date",
+          "human_parameter_description": "Only include commits on or after this date and time (ISO 8601). Use this to narrow results to a time window."
+        },
+        "until": {
+          "type": "string",
+          "title": "Until",
+          "examples": [
+            "2023-12-31T23:59:59Z"
+          ],
+          "description": "Only commits created before this timestamp will be returned. This is a timestamp in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`. Please provide a value of type string.",
+          "human_parameter_name": "End date",
+          "human_parameter_description": "Only include commits before this date and time (ISO 8601). Use with Start date to define a date range."
+        },
+        "author": {
+          "type": "string",
+          "title": "Author",
+          "examples": [
+            "octocat",
+            "mona@github.com"
+          ],
+          "description": "Filter commits by the commit author's GitHub login or email address. Please provide a value of type string.",
+          "human_parameter_name": "Commit author",
+          "human_parameter_description": "Only show commits authored by this user or email address. Enter a GitHub username or an email."
+        },
+        "per_page": {
+          "type": "integer",
+          "title": "Per Page",
+          "default": 1,
+          "examples": [
+            "30",
+            "100"
+          ],
+          "description": "Number of results to return per page (max 100). Please provide a value of type integer.",
+          "human_parameter_name": "Results per page",
+          "human_parameter_description": "How many commits to return per page. Increase this to see more results at once, up to 100."
+        },
+        "committer": {
+          "type": "string",
+          "title": "Committer",
+          "examples": [
+            "web-flow",
+            "octocat@github.com"
+          ],
+          "description": "Filter commits by the commit committer's GitHub login or email address. The committer is the user who applied the patch and may differ from the original author. Please provide a value of type string.",
+          "human_parameter_name": "Commit committer",
+          "human_parameter_description": "Only show commits committed by this user or email (the person who applied the change). This can be different from the original author."
+        }
+      },
+      "description": "Request schema for `ListCommits`. Note: Commits are always returned in reverse chronological order (newest first). Sorting options are not available - do not use 'sort' parameter.",
+      "additionalProperties": false
+    },
+    "toolkit": "github",
+    "side_effect": "read"
+  },
+  {
+    "name": "github.list_organization_repositories",
+    "description": "Retrieves a list of repositories for a specified GitHub organization, allowing filtering by type and sorting.",
+    "parameters": {
+      "type": "object",
+      "title": "ListOrganizationRepositoriesRequest",
+      "required": [
+        "org"
+      ],
+      "properties": {
+        "org": {
+          "type": "string",
+          "title": "Org",
+          "examples": [
+            "github",
+            "microsoft",
+            "google"
+          ],
+          "description": "Name of the GitHub organization (not case-sensitive). Please provide a value of type string. This parameter is required.",
+          "human_parameter_name": "Organization Name",
+          "human_parameter_description": "The GitHub organization whose repositories you want to see. Use the organization\u2019s handle (what appears in the URL), like 'github' or 'microsoft'."
+        },
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "default": 1,
+          "examples": [
+            "1",
+            "2",
+            "5"
+          ],
+          "description": "Page number for pagination (starts from 1). Please provide a value of type integer.",
+          "human_parameter_name": "Page Number",
+          "human_parameter_description": "Which page of results you want to view. Start with 1, then go to 2, 3, etc. to see more."
+        },
+        "sort": {
+          "enum": [
+            "created",
+            "updated",
+            "pushed",
+            "full_name"
+          ],
+          "type": "string",
+          "title": "Sort",
+          "default": "created",
+          "examples": [
+            "created",
+            "updated",
+            "pushed",
+            "full_name"
+          ],
+          "description": "Property to sort repositories by: `created`, `updated`, `pushed`, or `full_name`. Please provide a value of type string.",
+          "human_parameter_name": "Sort Criteria",
+          "human_parameter_description": "How you want the list ordered, such as by when repos were created, last updated, last pushed, or by name. Pick what makes it easiest to browse."
+        },
+        "type": {
+          "enum": [
+            "all",
+            "public",
+            "private",
+            "forks",
+            "sources",
+            "member"
+          ],
+          "type": "string",
+          "title": "Type",
+          "default": "all",
+          "examples": [
+            "all",
+            "public",
+            "private",
+            "forks",
+            "sources",
+            "member"
+          ],
+          "description": "Specifies the type of repositories to return: `all`, `public`, `private` (requires permissions), `forks`, `sources` (not forks), or `member` (repositories with explicit user access). Please provide a value of type string.",
+          "human_parameter_name": "Repository Type",
+          "human_parameter_description": "Choose which kinds of repositories to include, like all, public, private, forks, sources, or ones you\u2019re a member of. This helps narrow the list to what you care about."
+        },
+        "per_page": {
+          "type": "integer",
+          "title": "Per Page",
+          "default": 1,
+          "examples": [
+            "30",
+            "50",
+            "100"
+          ],
+          "description": "Number of results per page (maximum 100). Please provide a value of type integer.",
+          "human_parameter_name": "Results Per Page",
+          "human_parameter_description": "How many repositories to show on each page of results. Increase to see more at once (up to 100)."
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string",
+          "title": "DirectionEnm",
+          "examples": [
+            "asc",
+            "desc"
+          ],
+          "description": "Sort order: `asc` (ascending) or `desc` (descending). Defaults to `asc` if `sort` is `full_name`, else `desc`. Please provide a value of type string.",
+          "human_parameter_name": "Sort Direction",
+          "human_parameter_description": "Whether the list should go from low to high (ascending) or high to low (descending). Choose the direction that fits how you want to scan results."
+        }
+      },
+      "description": "Request to list repositories for a specified GitHub organization."
+    },
+    "toolkit": "github",
+    "side_effect": "read"
+  },
+  {
+    "name": "github.list_organizations_for_the_authenticated_user",
+    "description": "Lists organizations the authenticated GitHub user is a member of, returning details for each organization.",
+    "parameters": {
+      "type": "object",
+      "title": "ListOrganizationsForTheAuthenticatedUserRequest",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "default": 1,
+          "examples": [
+            "1",
+            "2",
+            "10"
+          ],
+          "description": "The page number of the results to retrieve, used for pagination. Default is 1. Please provide a value of type integer.",
+          "human_parameter_name": "Page number",
+          "human_parameter_description": "Which page of results you want to view. Start at 1, then go to 2, 3, and so on to see later pages."
+        },
+        "per_page": {
+          "type": "integer",
+          "title": "Per Page",
+          "default": 30,
+          "examples": [
+            "30",
+            "50",
+            "100"
+          ],
+          "description": "The number of organization results to return per page. Default is 30, maximum is 100. Please provide a value of type integer.",
+          "human_parameter_name": "Results per page",
+          "human_parameter_description": "How many organization results to show on each page. Increase this to see more results at once (up to 100)."
+        }
+      },
+      "description": "Defines the parameters for paginating the list of organizations for the authenticated user."
+    },
+    "toolkit": "github",
+    "side_effect": "read"
+  },
+  {
+    "name": "github.list_repositories_for_the_authenticated_user",
+    "description": "Lists repositories for the authenticated user; using 'type' with 'visibility' or 'affiliation' API parameters (not in this model) can cause a 422 error.",
+    "parameters": {
+      "type": "object",
+      "title": "ListRepositoriesForTheAuthenticatedUserRequest",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "default": 1,
+          "examples": [
+            "1",
+            "2",
+            "10"
+          ],
+          "description": "Page number of results to fetch. Please provide a value of type integer.",
+          "human_parameter_name": "Page Number",
+          "human_parameter_description": "Which page of results you want to view. Use this to move through the list when there are many repositories."
+        },
+        "sort": {
+          "enum": [
+            "created",
+            "updated",
+            "pushed",
+            "full_name"
+          ],
+          "type": "string",
+          "title": "Sort",
+          "default": "full_name",
+          "examples": [
+            "created",
+            "full_name",
+            "updated"
+          ],
+          "description": "The repository property by which to sort the results. Please provide a value of type string.",
+          "human_parameter_name": "Sort By",
+          "human_parameter_description": "Select the property to order the results by, like creation date, last update, or full name. Pick what makes browsing easiest for you."
+        },
+        "type": {
+          "enum": [
+            "all",
+            "owner",
+            "public",
+            "private",
+            "member"
+          ],
+          "type": "string",
+          "title": "Type",
+          "default": "all",
+          "examples": [
+            "all",
+            "owner",
+            "member"
+          ],
+          "description": "Filters the results to repositories of the specified type. Please provide a value of type string.",
+          "human_parameter_name": "Repository Type",
+          "human_parameter_description": "Choose which repositories to include, such as all, only ones you own, or those you\u2019re a member of. This helps narrow the list to what matters to you."
+        },
+        "since": {
+          "type": "string",
+          "title": "Since",
+          "examples": [
+            "2023-01-01T00:00:00Z",
+            "2023-05-15T10:30:00-07:00"
+          ],
+          "description": "Filters for repositories updated at or after this specified time. Provide as an ISO 8601 formatted timestamp. Please provide a value of type string.",
+          "human_parameter_name": "Updated Since",
+          "human_parameter_description": "Only show repositories updated at or after this date and time. Helpful for focusing on recent activity from a specific point."
+        },
+        "before": {
+          "type": "string",
+          "title": "Before",
+          "examples": [
+            "2024-01-01T00:00:00Z",
+            "2024-03-20T18:45:00+00:00"
+          ],
+          "description": "Filters for repositories updated before this specified time. Provide as an ISO 8601 formatted timestamp. Please provide a value of type string.",
+          "human_parameter_name": "Updated Before",
+          "human_parameter_description": "Only show repositories updated before this date and time. Helpful for reviewing activity that happened earlier."
+        },
+        "per_page": {
+          "type": "integer",
+          "title": "Per Page",
+          "default": 30,
+          "examples": [
+            "30",
+            "50",
+            "100"
+          ],
+          "description": "The number of results to return per page (maximum 100). Please provide a value of type integer.",
+          "human_parameter_name": "Results Per Page",
+          "human_parameter_description": "How many repositories to show per page. Set a higher number to see more at once (up to 100)."
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string",
+          "title": "DirectionEnm",
+          "examples": [
+            "asc",
+            "desc"
+          ],
+          "description": "The direction of the sort. Defaults to `asc` when `sort` is 'full_name', and `desc` otherwise. Please provide a value of type string.",
+          "human_parameter_name": "Sort Direction",
+          "human_parameter_description": "Choose whether the list is sorted ascending or descending. For example, A\u2013Z vs Z\u2013A, or oldest first vs newest first."
+        }
+      },
+      "description": "Request schema for `ListRepositoriesForTheAuthenticatedUser`"
+    },
+    "toolkit": "github",
+    "side_effect": "read"
+  },
+  {
+    "name": "github.list_branches",
+    "description": "List branches in a GitHub repository. Returns branch names, commit information, and protection status. Use this action when you need to retrieve all branches in a repository, optionally filtered by protection status. This is useful for identifying available branches, checking which branches are protected, or preparing to create pull requests.",
+    "parameters": {
+      "type": "object",
+      "title": "ListBranchesRequest",
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "properties": {
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "default": 1,
+          "minimum": 1,
+          "examples": [
+            1,
+            2,
+            3
+          ],
+          "description": "The page number of the results to fetch. For more information, see 'Using pagination in the REST API'. Please provide a value of type integer."
+        },
+        "repo": {
+          "type": "string",
+          "title": "Repo",
+          "examples": [
+            "hello-world",
+            "vscode"
+          ],
+          "description": "The name of the repository without the `.git` extension. The name is not case sensitive. Please provide a value of type string. This parameter is required."
+        },
+        "owner": {
+          "type": "string",
+          "title": "Owner",
+          "examples": [
+            "octocat",
+            "microsoft"
+          ],
+          "description": "The account owner of the repository. The name is not case sensitive. Please provide a value of type string. This parameter is required."
+        },
+        "per_page": {
+          "type": "integer",
+          "title": "Per Page",
+          "default": 25,
+          "maximum": 100,
+          "minimum": 1,
+          "examples": [
+            25,
+            50,
+            100
+          ],
+          "description": "The number of results per page (max 100). For more information, see 'Using pagination in the REST API'. Please provide a value of type integer."
+        },
+        "protected": {
+          "type": "boolean",
+          "title": "Protected",
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Setting to `true` returns only branches protected by branch protections or rulesets. When set to `false`, only unprotected branches are returned. Omitting this parameter returns all branches. Please provide a value of type boolean."
+        }
+      }
+    },
+    "toolkit": "github",
+    "side_effect": "read"
+  }
+]
