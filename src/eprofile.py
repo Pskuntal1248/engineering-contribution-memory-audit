@@ -16,6 +16,7 @@ from models import Item
 from weekly import id_key
 
 TEXT_KEEP = 160
+GROUPING_VERSION = 2
 
 
 import re as _re
@@ -123,6 +124,8 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
                 prior: dict[str, Any] | None, repo_aliases: dict[str, str] | None = None, embedder=None, team_changes: list[tuple[str, str]] | None = None, reuse_names: bool = False,
                 new_ids: set[str] | None = None) -> dict[str, Any]:
     by_id = {i.id: i for i in items}
+    stale_groups = bool(prior and prior.get("items") and prior.get("grouping_version") != GROUPING_VERSION)
+    reuse_names = reuse_names and not stale_groups
     dense, enotes = ({}, [])
     if embedder is not None and items:
         dense, enotes = await _embedding_step(embedder, items, llm=llm, budget=budget, framework=framework, role_and_level=role_and_level, prior=prior,
@@ -138,13 +141,18 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
         placed = {iid for c in clusters.values() if len(c["item_ids"]) >= 2 for iid in c["item_ids"]}
         for it in items:
             sp = it.meta.get("saved_project")
-            if sp and it.id not in placed and sp in home:
+            target_repos = {repo_aliases.get(by_id[i].meta["repo"], by_id[i].meta["repo"]).lower() if repo_aliases else by_id[i].meta["repo"].lower()
+                            for i in clusters.get(home.get(sp, ""), {}).get("item_ids", []) if by_id[i].meta.get("repo")}
+            own_repo = (repo_aliases or {}).get(it.meta.get("repo", ""), it.meta.get("repo", "")).lower()
+            if sp and it.id not in placed and sp in home and (not own_repo or not target_repos or own_repo in target_repos):
                 for c in clusters.values():  # leave the one-item group it formed alone
                     if it.id in c["item_ids"]:
                         c["item_ids"] = [x for x in c["item_ids"] if x != it.id]
                 clusters[home[sp]]["item_ids"].append(it.id)
     project_of = {iid: pid for pid, c in clusters.items() for iid in c["item_ids"]}
     notes: list[str] = list(enotes)
+    if stale_groups:
+        notes.append("Saved grouping/card cache predates repo-safe grouping: rebuilt from saved evidence without resetting items, seen IDs or source cursors. Saved snippets are shortened; source completeness was not rechecked.")
     if embedder is not None and dense:
         st = getattr(embedder, "last", {}) or {}
         notes.append(f"topic grouping used embeddings: all {len(items)} items in {st.get('attempts', '?')} request(s), {st.get('failed_attempts', 0)} failed, each charged to the run's model budget, plus keywords")
@@ -202,6 +210,7 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
     card_store = [{"ev": sorted({id_key(e) for e in c["evidence"]})[:60], "name": c["name"], "goal": c.get("goal", "")[:200], "outcome": c.get("outcome", "")[:240]} for c in cards]
     for card in cards:
         prs = [by_id[e] for e in card["evidence"] if by_id[e].type == "pr"]
+        card["role"] = cap_role(card["role"], [by_id[e] for e in clusters[card["project_id"]]["item_ids"]], username)
         card["co_contributors"] = [n for n in {p for e in card["evidence"] for p in ([by_id[e].author] + by_id[e].co_authors)} if n and n.lower() != username.lower() and n not in names and not outputs_id(n)][:6]
         if team_changes:  # team change mid-period: the project's items grouped by the team in force, with the change date
             split = linking.split_by_team([by_id[x] for x in clusters[card["project_id"]]["item_ids"]], team_changes)
@@ -264,4 +273,4 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
         "confidential": sorted(confidential_ids(items)), "framework_status": fw_status, "framework_cache": fw_cache, "framework_cache_new": fw_cache_new,
         "mapping_cache": mp.cache if mp is not None else None, "mapping_cache_new": bool(mp is not None and mp.new_calls),
         "top": [{"id": i.id, "title": i.title, "lines": metrics.contribution_size(i)} for i in metrics.top_contributions(items, 8)],
-    }
+                    }
