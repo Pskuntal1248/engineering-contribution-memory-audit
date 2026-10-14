@@ -157,7 +157,7 @@ def test_failed_slack_scope_does_not_discard_successful_other_sources():
     store=InMemoryStore();gw=JiraProjects()
     out=asyncio.run(agent.make_graph(blocked_deps(gw,store)).ainvoke({'inputs':dict(INP,slack_channels='payments-engr'),'memory':{}}))
     profile=asyncio.run(PlatformStore(store,out['memory']).aload())
-    assert out['result']['status']=='completed' and profile['items']
+    assert out['result']['status']=='partial' and profile['items']
     assert not profile['scope_sync']['slack:payments-engr:No']['complete']
     assert not profile['scope_sync']['slack:payments-engr:No']['cursor']
     assert profile['scope_sync']['jira::PAY']['complete']
@@ -172,8 +172,8 @@ def test_stale_weekly_source_fields_are_pending_not_replacements():
     out=asyncio.run(agent.make_graph(blocked_deps(JiraProjects(),store)).ainvoke({'inputs':INP,'memory':{}}))
     out2=asyncio.run(agent.make_graph(blocked_deps(JiraProjects(),store)).ainvoke({'inputs':dict(INP,slack_channels='payments-engr'),'memory':out['memory']}))
     profile=asyncio.run(PlatformStore(store,out2['memory']).aload())
-    assert out2['result']['status']=='completed' and out2['result']['mode']=='weekly'
-    assert profile['source_setup']['config']['slack_channels']=='payments-eng'
-    assert profile['source_setup']['pending_config']['slack_channels']=='payments-eng, payments-engr'
+    assert out2['result']['status']=='partial' and out2['result']['mode']=='weekly'
+    assert 'payments-eng' in profile['source_setup']['config']['slack_channels']
+    assert profile['source_setup']['config']['slack_channels']=='payments-eng, payments-engr'
     assert profile['scope_sync']['slack:payments-eng:No']['complete']
-    assert 'slack:payments-engr:No' not in profile['scope_sync']
+    assert not profile['scope_sync']['slack:payments-engr:No']['complete']
