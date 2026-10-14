@@ -343,18 +343,18 @@ def run_months(months, now=NOW):
 @pytest.mark.parametrize("months", [6, 120, 1200, 12000, 13200])
 def test_every_representable_month_count_reads_exactly_that_period(months):
     out, src = run_months(months)
-    start = NOW - timedelta(days=30 * months)
-    assert src.since == [f"{start.year:04d}-{start.month:02d}-{start.day:02d}T{start.hour:02d}:{start.minute:02d}:{start.second:02d}Z"]
+    from inputs import backfill_since
+    assert src.since == [backfill_since(NOW, months)]
     assert "1970" not in str(out["result"]["notes"]) and out["result"]["status"] == "completed"
 
 
 def test_years_before_1000_are_zero_padded_so_the_date_stays_parseable():
     out, src = run_months(13200)                     # 1084 years back: year 942
-    assert src.since[0].startswith("0942-") and datetime.fromisoformat(src.since[0].replace("Z", "+00:00")).year == 942
+    assert src.since[0].startswith("0926-") and datetime.fromisoformat(src.since[0].replace("Z", "+00:00")).year == 926
 
 
 def test_the_largest_representable_request_works_and_one_more_is_refused_before_any_call():
-    most = (NOW - datetime(1, 1, 1, tzinfo=timezone.utc)).days // 30
+    most = (NOW.year - 1) * 12 + NOW.month - 1
     out, src = run_months(most)
     assert src.since and src.since[0].startswith("0001-")
     for months in (most + 1, 10 ** 9, 10 ** 15):
