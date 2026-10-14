@@ -1,7 +1,7 @@
 contract: v1
 name: engineering-contribution-memory
 version: 0.1.4
-description: Reads the last 6 months of your GitHub, Jira, Slack and docs and keeps an evidence-linked engineering profile. It links shipped work into projects, shows invisible work like reviews and on-call, evidences gaps against your career ladder, and gives weekly summaries, 1:1 points, review material and interview stories on demand from the saved profile. The weekly run is Friday 17:00 IST (changeable) and adds the week's new items; the timezone input sets report dates.
+description: Start with GitHub to build an evidence-linked engineering profile from your last 6 months of work. Jira, Slack and docs are optional. See shipped work, reviews and gaps against your career ladder, then request weekly summaries, 1:1 points, review material and interview stories from the saved profile. The weekly run is Friday 17:00 IST; timezone sets report dates. Coverage and incomplete reads are shown.
 kind: monitor
 
 runtime:
@@ -160,4 +160,3 @@ state:
 outputs:
   profile: {renderer: markdown, label: "Profile / report", destinations: [download]}
   ledger: {renderer: rows, label: "Item ledger (CSV)"}
-
