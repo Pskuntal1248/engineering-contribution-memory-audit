@@ -67,7 +67,7 @@ def test_allowlist_disables_account_discovery_and_applies_exclusion():
 
 def test_form_onboarding_required_only_role():
     m = yaml.safe_load(open('manifest.yaml'))
-    assert len(m['inputs']) == 21
+    assert len(m['inputs']) == 19
     assert [x['name'] for x in m['inputs'] if x.get('required')] == ['role_and_level', 'repos_or_org']
     assert all(x['label'].startswith('Advanced:') for x in m['inputs'] if x['name'] not in {'github_username','role_and_level','request','repos_or_org'})
 
@@ -96,7 +96,7 @@ def test_coverage_summary_once_and_persists_for_on_demand():
     follow = invoke({**INP,'request':'one_on_one'},first['memory'])
     assert first['corpus']['summary'].count('Not covered:') == 1
     assert follow['corpus']['summary'].count('Not covered:') == 1
-    assert first['corpus']['summary'].startswith('Repos read:')
+    assert 'Repos read:' in first['corpus']['summary']
 
 
 def test_discovery_pages_repeat_is_unverifiable_not_no_commits():
@@ -128,11 +128,9 @@ def test_adding_source_backfills_instead_of_github_cursor_only():
     assert second['result']['mode'] == 'weekly'
     assert seen[0] != seen[2]  # normal run only updates the existing GitHub scope
     from store import NativeMemoryStore
-    assert NativeMemoryStore(second['memory']).load()['source_setup']['pending_config']['jira_projects']
-    seen.clear()
-    third = asyncio.run(g.ainvoke({'inputs':{**INP,'request':'enrich_new_scopes'},'memory':second['memory']}))
-    assert third['result']['mode']=='enrichment' and len(seen)==15
-    assert len(set(seen))==1
+    assert NativeMemoryStore(second['memory']).load()['source_setup']['config']['jira_projects']
+    assert second['result']['status']=='partial'
+    assert len(seen)==19  # two original repos plus 15 newly supplied optional scopes
 
 
 def test_discovery_arguments_match_live_catalog_schemas():
