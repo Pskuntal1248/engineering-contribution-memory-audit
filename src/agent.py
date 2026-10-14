@@ -100,8 +100,6 @@ def make_graph(deps: Deps):
             raise ValueError('Saved history is unreadable or missing from storage. No source reads or state changes were made. Restore the saved history before continuing; this run will not silently reset or backfill it.' + detail)
         inp, setup = source_setup.resolve(prior, inp)
         problems = validate_inputs(inp)
-        if setup.get('pending_config'):
-            problems += ['pending source setup: ' + p for p in validate_inputs({**inp, **setup['pending_config']})]
         if not problems and str(inp.get("backfill_months") or "").strip():
             try:
                 backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)
@@ -125,13 +123,13 @@ def make_graph(deps: Deps):
             login = str(who.get("login") or "").strip()
             if login:
                 inp["github_username"] = login
-                id_notes.append(f"GitHub username taken from the connected GitHub account: {login} (GitHub login for attribution, separate from your display name). A display name entered in the form takes priority over the account name. If that login is not you, type your GitHub username and run again")
+                id_notes.append(f"GitHub username taken from the connected GitHub account: {login}. If that login is not you, type your GitHub username and run again")
                 if not str(inp.get("display_name") or "").strip() and str(who.get("name") or "").strip():
                     inp["display_name"] = str(who["name"]).strip()
             else:
                 raise RuntimeError("Could not read your GitHub username from the connected GitHub account. Connect GitHub, or type your username in 'Your GitHub username' and run again.")
         # Jira is optional. Only resolve its site when the user selected projects.
-        if deps.site and str(inp.get("request") or "") not in ON_DEMAND and inp.get("jira_projects") and not str(inp.get("jira_site") or "").strip():
+        if deps.site and inp.get("jira_projects") and not str(inp.get("jira_site") or "").strip():
             try:
                 base = str(await deps.site() or "").strip()
             except Exception as e:
@@ -150,8 +148,7 @@ def make_graph(deps: Deps):
         has_memory = bool(prior.get("items") or prior.get("last_run"))  # an empty but completed run still counts
         if req == "auto":
             req = "weekly" if has_memory or prior.get("source_setup") else "backfill"  # weekly only after a backfill really completed
-        if req in ON_DEMAND and not has_memory:
-            raise ValueError("No saved evidence for this output. Run the explicit initial backfill/enrichment first; this output will not fetch sources.")
+
         selected = sorted({r.lower() for r in repo_entries(inp.get("repos_or_org"))} - {r.lower() for r in repo_entries(inp.get("exclude_repos"))})
         if not selected:
             raise ValueError("All selected repositories are excluded. No source reads or state changes.")
@@ -163,8 +160,6 @@ def make_graph(deps: Deps):
         # Migration: only exact scopes explicitly recorded complete can be reused. Broad saved evidence is retained,
         # but an old shared timestamp cannot prove any per-scope successful sync.
         pending = [key for key in active_scopes if not sync.get(key, {}).get("complete")]
-        if req == "enrich_new_scopes":
-            req = "enrichment"
         setup["config"]["github_username"] = inp["github_username"]
         return {"inputs": inp, "ctx": {"started": time.monotonic(), "mode": req, "source_setup": setup, "active_scopes": active_scopes, "pending_scopes": pending, "scope_sync": sync, "selected_repos": selected, "prior": prior, "store": store, "notes": id_notes + (["memory was unreadable, starting fresh"] if prior.get("_corrupt") else (["the saved history was missing from the store, so this run backfills again"] if prior.get("_store_empty") else []))}}
 
@@ -176,7 +171,7 @@ def make_graph(deps: Deps):
             cfg.jira_projects = []
         ctx["cfg"], ctx["log"] = cfg, ToolLog()
         mode = ctx["mode"]
-        if mode in ON_DEMAND or mode == "update_source_setup":  # saved-only outputs/setup edits never read contribution sources
+        if mode in ON_DEMAND and not ctx["pending_scopes"]:  # saved-only outputs/setup edits never read contribution sources
             ctx["raw"] = {"failed": [], "capped": []}
             return {"ctx": ctx}
         start = backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)
@@ -184,26 +179,42 @@ def make_graph(deps: Deps):
         ctx["since"] = start
         combined = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": [], "coverage": {}}
         scopes = ctx["active_scopes"]
-        targets = [k for k in scopes if not ctx["scope_sync"].get(k, {}).get("complete") or ctx["scope_sync"].get(k, {}).get("status") == "incomplete"] if mode in {"backfill", "enrichment"} else [k for k in scopes if ctx["scope_sync"].get(k, {}).get("complete")]
+        targets = list(scopes) if mode in {"backfill", "weekly"} else list(ctx["pending_scopes"])
+        limit_mode = 'on_demand' if mode in ON_DEMAND else 'backfill' if mode == 'backfill' else 'weekly'
+        source_deadline = ctx['started'] + MODE_LIMITS[limit_mode][1] * 0.60
+        ctx['read_targets'] = []
         for key in targets:
+            if time.monotonic() >= source_deadline:
+                break
+            ctx['read_targets'].append(key)
             spec = scopes[key]
             single_cfg = source_setup.scoped_config(cfg, spec)
             src = deps.source_factory(single_cfg)
             if hasattr(src, "allow_non_github_scope"):
                 src.allow_non_github_scope = True
             if hasattr(src, "deadline"):
-                src.deadline = ctx.get("started", time.monotonic()) + MODE_LIMITS["backfill" if mode in {"backfill", "enrichment"} else "weekly"][1] * 0.73
-            if hasattr(src, "configure_scope"):
-                src.configure_scope([], start, until)
+                src.deadline = source_deadline
             old_sync = ctx["scope_sync"].get(key, {})
-            since = since_for(old_sync.get("cursor"), start) if mode == "weekly" or old_sync.get("complete") else start
+            needs_history = not old_sync.get('complete')
+            since = (old_sync.get('history_cursor') or start) if needs_history else since_for(old_sync.get('cursor'), start)
+            end = until
+            if needs_history and mode != 'backfill':
+                end_dt = min(datetime.fromisoformat(since.replace('Z', '+00:00')).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7), deps.now())
+                end = end_dt.isoformat().replace('+00:00', 'Z')
+            if hasattr(src, 'configure_scope'):
+                src.configure_scope([], since, end)
+                src.window_is_current = end == until
             try:
-                raw = {"failed": [{"source": key, "error": "Jira unavailable"}], "coverage": {"jira": "isn't connected"}} if inp.get("_jira_unavailable") and spec["source"] == "jira" else await src.fetch(since, until, ctx["log"])
+                raw = {'failed': [{'source': key, 'error': 'Jira unavailable'}], 'coverage': {'jira': "isn't connected"}} if inp.get('_jira_unavailable') and spec['source'] == 'jira' else await __import__('asyncio').wait_for(src.fetch(since, end, ctx['log']), timeout=max(0.01, source_deadline-time.monotonic()))
             except Exception as e:
-                raw = {"failed": [{"source": key, "error": str(e)[:200]}]}
+                raw = {'failed': [{'source': key, 'error': str(e)[:200] or 'Source time limit reached'}]}
             success = source_setup.scope_success(raw, spec)
-            ctx["scope_sync"][key] = {**old_sync, "complete": bool(old_sync.get("complete")) or success, "cursor": until if success else old_sync.get("cursor", ""),
-                                      "last_attempt": until, "window_start": old_sync.get("window_start", start), "status": "complete" if success else "incomplete"}
+            finished = success and end == until
+            ctx['scope_sync'][key] = {**old_sync, 'complete': bool(old_sync.get('complete')) or finished,
+                'cursor': end if finished else old_sync.get('cursor', ''),
+                'history_cursor': end if success and needs_history else old_sync.get('history_cursor', ''),
+                'last_attempt': until, 'window_start': old_sync.get('window_start', start),
+                'status': 'complete' if finished else 'history_pending' if success else 'incomplete'}
             gh = raw.get("github", {})
             combined["github"]["prs"].extend(gh.get("prs", []))
             combined["github"]["commits"].extend(gh.get("commits", []))
@@ -216,23 +227,25 @@ def make_graph(deps: Deps):
                 combined["slack"]["permalink_base"] = raw["slack"]["permalink_base"]
             for field in ("docs", "failed", "capped"):
                 combined[field].extend(raw.get(field, []))
-            combined["coverage"].update({k: v for k, v in raw.get("coverage", {}).items() if k == spec["source"]})
+            combined['coverage'].update({k: v for k, v in raw.get('coverage', {}).items() if k == spec['source']})
+            if success and not finished:
+                combined['coverage'][spec['source']] = 'history partly checked' 
             if not success:
-                combined["failed"].append({"source": key, "error": "Scope incomplete/unavailable. Successful cursor was not advanced; explicit enrichment retries this scope."})
+                combined["failed"].append({"source": key, "error": "Scope incomplete/unavailable. Successful cursor was not advanced; A later report resumes only unfinished coverage."})
         for name, present in (("jira", cfg.jira_projects), ("slack", cfg.slack_channels), ("docs", cfg.docs_sources)):
             combined["coverage"].setdefault(name, "covered" if present else {"jira": "no projects selected", "slack": "no channels selected", "docs": "no docs source selected"}[name])
         if inp.get("_jira_unavailable"):
             combined["coverage"]["jira"] = "isn't connected"
         ctx["pending_scopes"] = [k for k in scopes if not ctx["scope_sync"].get(k, {}).get("complete")]
         ctx["raw"] = combined
-        ctx["raw"]["repo_scope"] = {"mode": "allow-list", "read": [scopes[k]["repo"] for k in targets if scopes[k]["source"] == "github"], "excluded": cfg.exclude_repos, "unverified": [scopes[k]["repo"] for k in ctx["pending_scopes"] if scopes[k]["source"] == "github"], "no_commits": []}
+        ctx["raw"]["repo_scope"] = {"mode": "allow-list", "read": [scopes[k]["repo"] for k in ctx["read_targets"] if scopes[k]["source"] == "github"], "excluded": cfg.exclude_repos, "unverified": [scopes[k]["repo"] for k in ctx["pending_scopes"] if scopes[k]["source"] == "github"], "no_commits": []}
         return {"ctx": ctx}
 
     async def analyse(state: State) -> dict:
         ctx, inp, cfg = state["ctx"], state["inputs"], state["ctx"]["cfg"]
         mode, prior = ctx["mode"], ctx["prior"]
         names = {n for n in cfg.name_hints if n}
-        budget = budget_for("backfill" if mode in {"backfill", "enrichment"} else "weekly" if mode == "weekly" else "on_demand")
+        budget = budget_for("backfill" if mode == "backfill" else "weekly" if mode == "weekly" else "on_demand")
         budget.started = ctx.get("started", budget.started)  # the spec's time limit covers the whole run, source reads included
         old = [eprofile.expand(r) for r in prior.get("items", [])]
         new_ids: set[str] = set()
@@ -243,7 +256,7 @@ def make_graph(deps: Deps):
         if ctx["raw"].get("blocked"):  # preflight stopped the read: no analysis and no model calls on unverified inputs
             ctx["items"], ctx["new_ids"], ctx["failed"], ctx["notes"], ctx["budget"], ctx["prof"] = [], set(), failed, notes, budget, None
             return {"ctx": ctx}
-        if mode in {"backfill", "weekly", "enrichment"}:
+        if ctx["raw"].get("github") is not None:
             ing = ingest(ctx["raw"], cfg, ctx["log"])
             seen = set(prior.get("seen", []))
             fresh, already = new_items(ing.items, seen)
@@ -278,13 +291,8 @@ def make_graph(deps: Deps):
         for it_ in items:  # calendar days are shown in the user's timezone; the stored time stays UTC (ordering, cursors)
             it_.meta["local_date"] = local_date_of(it_.date, tz)
         ctx["items"], ctx["new_ids"], ctx["failed"] = items, new_ids, failed
-        if mode == "update_source_setup":
-            ctx["prof"], ctx["notes"], ctx["budget"] = None, notes, budget
-            return {"ctx": ctx}
-        if ctx["source_setup"].get("pending_config"):
-            notes.append("New source selections saved as pending setup. Choose enrich_new_scopes to activate and backfill them separately; the current output uses existing evidence only.")
         if ctx["pending_scopes"]:
-            notes.append("Not covered: selected scopes pending enrichment: " + ", ".join(ctx["pending_scopes"]) + ". Choose enrich_new_scopes separately, then request the output again. No hidden backfill inside this output.")
+            notes.append("History still being added for: " + ", ".join(ctx["pending_scopes"]) + ". This report uses the evidence saved so far. Later reports resume missing coverage within their normal limits.")
         prof = await eprofile.build(items, username=cfg.username, names=names, llm=deps.llm, budget=budget,
                                     framework=str(inp.get("review_framework", "") or ""), role_and_level=str(inp.get("role_and_level", "")),
                                     prior=prior, repo_aliases=cfg.repo_aliases, embedder=deps.embedder,
@@ -296,12 +304,6 @@ def make_graph(deps: Deps):
 
     async def render(state: State) -> dict:
         ctx, inp, cfg = state["ctx"], state["inputs"], state["ctx"]["cfg"]
-        if ctx["mode"] == "update_source_setup":
-            corpus = {"title": "Source setup saved", "summary": f"Revision {ctx['source_setup']['revision']}. No source or model calls. Existing evidence retained; removed scopes hidden from active views.",
-                      "sections": [{"heading": "Next step", "body": "Choose enrich_new_scopes to backfill pending scopes separately. Then request your output.", "bullets": ctx["pending_scopes"]}]}
-            result = {"status": "setup_saved", "setup_revision": ctx["source_setup"]["revision"], "pending_scopes": ctx["pending_scopes"], "model_calls": 0}
-            ctx["corpus"], ctx["result"] = corpus, result
-            return {"ctx": ctx, "corpus": corpus, "result": result}
         if ctx["raw"].get("blocked"):  # a stopped run says so - it must not look like a completed profile
             bullets = [f"{f.get('source')}: {f.get('error')}" for f in ctx["failed"]]
             corpus = {"title": "Run stopped - fix the inputs and rerun",
@@ -326,9 +328,9 @@ def make_graph(deps: Deps):
         window_label = f"dated since {cut} (the last 7 days)" if mode == "weekly_summary" else "new since the last run"
         quiet = quiet_week_line(since, local_now(inp).strftime("%Y-%m-%d")) if mode in {"weekly", "weekly_summary"} and not window else None
         title = {"backfill": "Engineering profile", "weekly": "Weekly update", "weekly_summary": "Weekly summary", "one_on_one": "1:1 talking points",
-                 "review_material": "Review material", "interview_stories": "Interview stories", "evidence_gaps": "Evidence gaps", "enrichment": "New-scope enrichment"}[mode]
+                 "review_material": "Review material", "interview_stories": "Interview stories", "evidence_gaps": "Evidence gaps"}[mode]
         source_coverage = ctx["raw"].get("coverage") or ctx["prior"].get("coverage", {})
-        corpus, result = outputs.corpus_for("profile" if mode == "enrichment" else mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
+        corpus, result = outputs.corpus_for(mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
                                             colleagues=colleagues, names=names, date_from=str(inp.get("period_from", "") or ""), date_to=str(inp.get("period_to", "") or ""),
                                             run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label)
         from coverage import line as coverage_line
@@ -342,19 +344,22 @@ def make_graph(deps: Deps):
                 scope_text = scrub(scope_text, terms, False, False)
             corpus["summary"] = scope_text + "\n\n" + corpus.get("summary", "")
             result["repo_scope"] = scope
+        slack_coverage = source_coverage.get('slack', '')
+        if slack_coverage and slack_coverage != 'covered':
+            for section in corpus.get('sections', []):
+                if section.get('heading') == 'Invisible work' and not ctx['prof'].get('invisible'):
+                    section.pop('bullets', None)
+                    section['body'] = 'Not checked: Slack ' + slack_coverage + '. Enter Slack channels in the form to check for unticketed help, mentoring and debugging.'
+        if ctx['pending_scopes']:
+            corpus['summary'] = 'Partial source coverage: this report uses evidence collected so far, not a complete six-month scan. Later reports resume unfinished coverage.\n\n' + corpus.get('summary', '')
         notice = coverage_line(source_coverage)
         if notice:
             corpus["summary"] = corpus.get("summary", "") + "\n\n" + notice
         result["source_coverage"] = source_coverage
-        result["setup_revision"] = ctx["source_setup"]["revision"]
         result["pending_scopes"] = ctx["pending_scopes"]
         result["scope_sync"] = ctx["scope_sync"]
-        result["pending_source_setup"] = ctx["source_setup"].get("pending_config")
-        if mode == "enrichment":
-            result["mode"] = "enrichment"
-            corpus["summary"] = "Separate backfill-budget enrichment of new/incomplete scopes. Request your 1:1/interview/review output after this completes. " + corpus["summary"]
         result["model_diagnostics"] = list(getattr(deps.llm, "diagnostics", []))
-        result["status"] = "completed"
+        result["status"] = "partial" if ctx["pending_scopes"] or ctx["failed"] or ctx["raw"].get("capped") or len(ctx.get("read_targets", [])) < len(ctx["active_scopes"]) and mode not in ON_DEMAND else "completed"
         result["model_calls"] = ctx["budget"].calls  # every attempt on the wire: chat (retries included) plus embeddings (retries and failures included)
         result["embedding_calls"] = ctx["budget"].by_kind.get("embedding", 0)
         result["chat_calls"] = ctx["budget"].calls - result["embedding_calls"]
@@ -378,22 +383,17 @@ def make_graph(deps: Deps):
 
     async def persist(state: State) -> dict:
         ctx, inp = state["ctx"], state["inputs"]
-        if ctx["mode"] == "update_source_setup":
-            profile = {**ctx["prior"], "source_setup": ctx["source_setup"], "scope_sync": ctx["scope_sync"]}
-            store = ctx["store"]
-            memory = await store.adump(profile) if hasattr(store, "adump") else store.dump(profile)
-            return {"memory": memory}
         if ctx["mode"] in ON_DEMAND and ctx.get("prof") and hasattr(ctx["store"], "asave_framework"):  # only the cache entries; the profile itself is not touched
             if ctx["prof"].get("framework_cache_new"):
                 await ctx["store"].asave_framework(ctx["prof"]["framework_cache"])
             if ctx["prof"].get("mapping_cache_new"):
                 await ctx["store"].asave_mapping(ctx["prof"]["mapping_cache"])
-        if ctx["mode"] in ON_DEMAND and ctx["source_setup"] != ctx["prior"].get("source_setup"):
+        if ctx["mode"] in ON_DEMAND and not ctx["raw"].get("github") and ctx["source_setup"] != ctx["prior"].get("source_setup"):
             profile = {**ctx["prior"], "source_setup": ctx["source_setup"], "scope_sync": ctx["scope_sync"]}
             store = ctx["store"]
             memory = await store.adump(profile) if hasattr(store, "adump") else store.dump(profile)
             return {"memory": memory}
-        if ctx["mode"] in ON_DEMAND or ctx["raw"].get("blocked"):
+        if (ctx["mode"] in ON_DEMAND and ctx["raw"].get("github") is None) or ctx["raw"].get("blocked"):
             return {}  # on-demand answers and stopped runs never change the saved profile
         prof, items, prior = ctx["prof"], ctx["items"], ctx["prior"]
         all_items = ctx.get("all_items", items)
