@@ -37,3 +37,14 @@ Use `gravity dev` or a scoped `gravity run` for a deliberate live test. These ca
 `run_all.py` is a personal synthetic live-test harness retained because its output checker is covered by a regression test. It has fixed test scopes and moves local saved state to a backup before running. Do not use it as the normal agent entry point or run it casually.
 
 Local fixture tests are not Gravity's official UC-10 acceptance suite. Interview evidence URLs may reveal internal names and are not safe to share externally as-is. Keep this repository private: removing audit artifacts from the current tree does not erase them from earlier Git commits.
+
+
+## Review onboarding branch (offline implementation)
+
+The revised first run can use GitHub only. Only role_and_level is required by the form; GitHub username is read from the connected account if blank and request defaults to weekly_update. Jira projects, Slack channels and docs are optional. Missing/unselected sources are named once in a plain Not covered line, not disguised as successful full coverage. Invalid explicit source selections still stop reads rather than being silently substituted.
+
+Blank repos_or_org discovers owned repositories and repositories in verified member organizations, then qualifies each with an authored commit in the calendar-month backfill window. Eligible forks/private repositories are included only as the connected token permits. Failed qualification is not labelled no commits. Explicit repos_or_org disables account discovery and retains exact named-repo/org expansion. exclude_repos removes exact owner/repo names before contribution reads. Repo scope is shown at the top. Advanced controls remain separate and optional. Dates use timezone; schedules run Friday17:00IST.
+
+Adding a previously unselected source triggers a full backfill with deduplication, so GitHub-only onboarding does not lose older Jira/Slack/doc evidence. Source coverage/scope is kept with the profile for subsequent on-demand answers. Real read failures remain separate diagnostics. Interview-output scope text is redacted consistently.
+
+Status: local source-snapshot Git branch only, based on verified cleanup head0f6b442. Not pushed or published, original history not preserved in this local base. Automated tests use fixtures/mocks, not the official samples/UC-10 pack. Two fresh-version real run IDs, model-credit availability and full official acceptance remain unverified. After publication, the reviewer recommends a fresh/incognito thread due to a reported pinned-version bug; verify actual version and run IDs.
