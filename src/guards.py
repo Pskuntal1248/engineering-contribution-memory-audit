@@ -145,9 +145,11 @@ def cap_role(claimed: str, evidence: list[Item], username: str) -> str:
     authored = [e for e in mine if e.type in {"pr", "commit", "doc"} and (e.author or "").lower() == username.lower()]
     only_reviews = bool(mine) and all(e.type == "review" for e in mine)
     if not mine:
-        return "supported" if claimed == "supported" else "reviewed" if any(e.type == "review" for e in evidence) else "supported"
+        return "supported"
     if only_reviews:
         return "reviewed"
+    if claimed == "reviewed" and not any(e.type == "review" for e in mine):
+        return "contributed"
     if claimed in {"led"}:
         prs = [e for e in evidence if e.type == "pr"]
         my_prs = [e for e in prs if e.meta.get("mine")]
@@ -309,4 +311,3 @@ def err_text(e: BaseException, n: int = 160) -> str:
     if subs:
         return "; ".join(dict.fromkeys(err_text(x, n) for x in subs))[:n]
     return (str(e) or e.__class__.__name__)[:n]
-
