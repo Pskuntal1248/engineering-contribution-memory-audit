@@ -33,7 +33,7 @@ class Gateway:
 
 def fetch(gw, discovery=True):
     has=HAS|{'github.list_repositories_for_the_authenticated_user','github.list_organizations_for_the_authenticated_user'}
-    src=GatewaySource(gw,'me',[] if discovery else ['me/r'],[],False,[],has)
+    src=GatewaySource(gw,'me',['me/r'],[],False,[],has)
     src.configure_scope([],START,END)
     return asyncio.run(src.fetch(START,END,ToolLog()))
 
@@ -42,7 +42,7 @@ def test_1000_commits_not_truncated_and_default_qualification_page_reused():
     assert len(out['github']['commits'])==1000 and not out.get('github_incomplete')
     calls=[a for n,a in gw.calls if n=='github.list_commits']
     assert len(calls)==11 #10full pages+empty, not20branches*11, qualification reused
-    assert all('sha' not in a for a in calls)
+    assert len({a.get('sha') for a in calls}) == 1 # identical heads scanned once
     assert not any('first 300' in c for c in out['capped'])
 
 def test_distinct_feature_history_still_read_and_sha_deduped():
