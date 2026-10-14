@@ -23,6 +23,7 @@ class Config:
     name_hints: list[str] = field(default_factory=list)  # display names / emails for Jira + docs
     repo_aliases: dict[str, str] = field(default_factory=dict)
     docs_sources: list[str] = field(default_factory=list)
+    exclude_repos: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -244,4 +245,3 @@ def ingest(raw: dict[str, Any], cfg: Config, log: ToolLog | None = None) -> Inge
     for i in items:
         counts[i.type] = counts.get(i.type, 0) + 1
     return Ingest(items, skipped, dups, dm_dropped, missing, counts)
-
