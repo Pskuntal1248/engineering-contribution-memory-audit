@@ -10,8 +10,11 @@ from analysis import NEEDS_DECISION
 from guards import FLAG, clip, has_term, TRIVIAL_TITLE, Statement, drop_colleague_assessments, flag_confidential, internal_terms, keep_cited, predicts_promotion, scrub
 from metrics import shipped
 from models import Item, day
+from normalize import parse_ts
 
 LEDGER_CAP = 6000
+PROJECT_OVERVIEW_CAP = 8
+EVIDENCE_CAP = 3
 
 
 _SLACK_ID = re.compile(r"\b[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,11}\b")
@@ -139,7 +142,7 @@ def block(title: str, sentence: str = "", facts: list[str] | None = None, items:
         paras.append(sentence.strip())
     if facts:
         paras.append("\n".join(f"- {f}" for f in facts))
-    its = [i for i in (items or []) if i]
+    its = [i for i in (items or []) if i][:EVIDENCE_CAP]
     if its:
         lines = _group_links(its)[:10]
         if len(its) == 1 and _same_title(title, its[0]):  # the heading already is the title: one source link, no repeated title
@@ -211,7 +214,7 @@ def _st_title(s: Statement, by_id: dict[str, Item]) -> str:
 
 def sar_block(p: dict[str, Any], by_id: dict[str, Item], conf: set[str], skip: set[str] = frozenset()) -> str:
     """Situation, action, result for one project. Every line comes from the profile and the linked items below it; a line is dropped when the sources have nothing for it."""
-    ev = _ev([e for e in p["evidence"] if e not in skip], by_id, 12)
+    ev = _ev([e for e in p["evidence"] if e not in skip], by_id, EVIDENCE_CAP)
     allev = [by_id[e] for e in p["evidence"] if e in by_id]
     start = next((i for i in sorted(allev, key=lambda i: (i.type != "ticket", i.date)) if i.type in {"ticket", "pr"}), None)
     situation = p["goal"] if p.get("goal") and not _PLACEHOLDER.search(p["goal"]) else (f"It started with {short(start.title, 90)}." if start else "")
@@ -245,8 +248,9 @@ def _ev(ids: list[str], by_id: dict[str, Item], n: int = 3, keep_order: bool = F
     ids = _drop_covered_commits(ids, by_id)
     if keep_order:  # the caller already ranked them (skills: the pages the user wrote first)
         return [by_id[i] for i in ids if i in by_id][:n]
-    ids = sorted((i for i in ids if i in by_id), key=lambda i: (_PRI.get(by_id[i].type, 9), by_id[i].date, i))
-    return [by_id[i] for i in ids[:n]]
+    ids = sorted((i for i in ids if i in by_id), key=lambda i: (bool(TRIVIAL_TITLE.search(by_id[i].title)),
+                 not by_id[i].meta.get("mine", False), _PRI.get(by_id[i].type, 9), -(parse_ts(by_id[i].date).timestamp() if parse_ts(by_id[i].date) else 0), i))
+    return [by_id[i] for i in ids[:min(n, EVIDENCE_CAP)]]
 
 
 def sources_for(items: list[Item]) -> list[dict[str, str]]:
@@ -391,7 +395,7 @@ def weekly_sections(profile: dict[str, Any], by_id: dict[str, Item], ids: set[st
     by_proj: dict[str, list[Item]] = {}
     for i in work:
         by_proj.setdefault(pname.get(pof.get(i.id, ""), "Other work"), []).append(i)
-    shipped_blocks = ["**" + n + "**\n\n" + "\n".join(f"- {x}" for x in _group_links(with_tickets(g))[:15]) for n, g in sorted(by_proj.items(), key=lambda kv: (kv[0] == "Other work", kv[0]))]
+    shipped_blocks = ["**" + n + "**\n\n" + "\n".join(f"- {x}" for x in _group_links(with_tickets(g))[:3]) + (f"\n- {max(0, len(_group_links(with_tickets(g))) - 3)} more work entries in the ledger." if len(_group_links(with_tickets(g))) > 3 else "") for n, g in sorted(by_proj.items(), key=lambda kv: (kv[0] == "Other work", kv[0]))]
     prog = [i for i in fresh if i.type == "pr" and not shipped(i) and not i.meta.get("reverted") and not i.meta.get("is_revert") and not i.meta.get("generated_only") and not i.meta.get("docs_only") and i.meta.get("state") != "closed"]
 
     def from_window(labels: set[str]) -> list[str]:
@@ -400,7 +404,7 @@ def weekly_sections(profile: dict[str, Any], by_id: dict[str, Item], ids: set[st
     return [
         {"heading": "What changed this week", "body": f"{len(fresh)} item(s) {window_label or 'new since the last run'}."},
         {"heading": "Shipped", "body": "\n\n".join(shipped_blocks)} if shipped_blocks else {"heading": "Shipped", "body": "Nothing shipped this week."},
-        blocks_sec("In progress", ["\n".join(f"- {x}" for x in _group_links(with_tickets(prog))[:15])] if prog else [], "Nothing in progress."),
+        blocks_sec("In progress", ["\n".join(f"- {x}" for x in _group_links(with_tickets(prog))[:3])] if prog else [], "Nothing in progress."),
         blocks_sec("Decisions", decs, "None this week."),
         blocks_sec("Problems solved", from_window({"problem_solved"}), "None this week."),
         blocks_sec("Help given", from_window({"help_given", "mentoring"}), "None this week."),
@@ -502,6 +506,9 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
     def sec(heading: str, bullets: list[str], none: str) -> dict[str, Any]:
         return {"heading": heading, "bullets": bullets} if bullets else {"heading": heading, "body": none}
     if kind in {"backfill", "profile"}:
+        overview = sorted(profile["projects"], key=lambda p: (
+            -sum(1 for e in p["evidence"] if e in by_id and shipped(by_id[e]) and by_id[e].type == "pr"),
+            -sum(1 for e in p["evidence"] if e in by_id and not TRIVIAL_TITLE.search(by_id[e].title)), p["name"]))[:PROJECT_OVERVIEW_CAP]
         mine_ = [i for i in items if i.meta.get("mine")]
         fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and re.search(r"\b(fix|fixes|fixed|bug|race|hotfix|mismatch|regression)\b", i.title, re.I)
                  and (shipped(i) if i.type == "pr" else str(i.meta.get("status", "")).lower() in {"done", "closed", "resolved"})]
@@ -518,7 +525,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
             inv.append(f"Unticketed debugging and fixes ({len(slack_fixes)}) are listed once, under Problems solved.")
         sections += [
             blocks_sec("Projects", [block(f"{p['name']} ({_span(p)})", p["outcome"] if not _PLACEHOLDER.search(p["outcome"]) else "",
-                                          facts=_project_facts(p) + _thread_facts(p["evidence"], by_id, {x for v in profile["invisible"] for x in v["evidence"]}), items=_ev([e for e in p["evidence"] if e not in {x for d in profile["decisions"] for x in d["evidence"]} and by_id[e].type != "thread"], by_id, 14) + [by_id[e] for e in p["evidence"] if e in by_id and by_id[e].type == "thread" and e not in {x for v in profile["invisible"] for x in v["evidence"]}][:2]) for p in profile["projects"]],
+                                          facts=_project_facts(p) + _thread_facts(p["evidence"], by_id, {x for v in profile["invisible"] for x in v["evidence"]}), items=_ev([e for e in p["evidence"] if e not in {x for d in profile["decisions"] for x in d["evidence"]} and e not in {x for v in profile["invisible"] for x in v["evidence"]}], by_id, EVIDENCE_CAP)) for p in overview],
                        "None found: no group of two or more linked PRs, tickets or docs yet."),
             blocks_sec("Problems solved", solved, "None found: no fix or debugging work with your part in it."),
             blocks_sec("Decisions", [block(short(d["title"], 90), f"My role: {d['role']}." + ("" if _PLACEHOLDER.search(d["summary"]) else f" {d['summary']}"), items=_ev(d["evidence"], by_id, 1)) for d in profile["decisions"]],
@@ -530,6 +537,10 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                        "None found: no feedback pattern repeated 3 or more times."),
         ]
     if kind in {"backfill", "profile"}:
+        if len(profile["projects"]) > len(overview):
+            omitted = [p for p in profile["projects"] if p not in overview]
+            sections.append({"heading": "Other projects", "body": f"Showing {len(overview)} of {len(profile['projects'])} projects above, ranked by shipped PRs then nontrivial evidence. Other projects remain in the saved profile and full ledger.",
+                             "bullets": [f"{p['name']}: {p['role']}, {len(p['evidence'])} linked item(s)" for p in omitted]})
         shown = " ".join(str(s_.get("body", "")) + " ".join(map(str, s_.get("bullets", []) or [])) for s_ in sections)
         rest_ = [i for i in sorted(items, key=lambda x: x.date) if i.type == "thread" and i.meta.get("mine") and i.url and i.url not in shown]
         if rest_:
@@ -607,6 +618,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
               "evidence_gaps": [{"expectation": g["expectation"], "status": g["status"]} for g in profile["gaps"]],
               "unavailable": list(dict.fromkeys(f["source"] for f in failed)),
               "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "analysis_status": "degraded" if FALLBACK in limit_notes else "not_flagged", "ledger_rows": len(rows)}
+    result["presentation"] = {"evidence_links_per_block": EVIDENCE_CAP, "project_overview_cap": PROJECT_OVERVIEW_CAP if kind in {"backfill", "profile"} else None, "full_ledger_in_csv": True}
     return corpus, result
 
 
@@ -640,6 +652,8 @@ def write_local_copy(corpus: dict[str, Any], directory: str = ".gravity", result
         import os
         os.makedirs(directory, exist_ok=True)
         with open(os.path.join(directory, "last_output.md"), "w", encoding="utf-8") as f:
+            f.write(to_markdown(corpus, with_tables=False))
+        with open(os.path.join(directory, "last_full_report.md"), "w", encoding="utf-8") as f:
             f.write(to_markdown(corpus))
         if result is not None:
             import json as _json
@@ -653,3 +667,4 @@ def write_local_copy(corpus: dict[str, Any], directory: str = ".gravity", result
                 w.writerows(first["rows"])
     except Exception:  # noqa: BLE001
         pass
+
