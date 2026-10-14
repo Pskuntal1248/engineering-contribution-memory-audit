@@ -80,12 +80,14 @@ class NativeMemoryStore:
             return {}
         try:
             p = unpack(blob)
-            return p if p.get("schema") == SCHEMA else {}
+            return p if p.get("schema") == SCHEMA else {"_corrupt": True}
         except Exception:  # corrupt memory: start fresh and say so upstream
             return {"_corrupt": True}
 
     def dump(self, profile: dict[str, Any]) -> dict[str, Any]:
         profile = dict(profile, schema=SCHEMA)
+        if packed_kb(profile) > self.budget:
+            raise ValueError('Saved history exceeds the available memory capacity. Existing evidence was not discarded or overwritten; use a persistent store with enough capacity before continuing.')
         p, notes = fit(profile, self.budget)
         p["compaction"] = notes
         # re-fit once more after adding notes
@@ -161,7 +163,7 @@ class PlatformStore:
             await self.store.aput(self.NS, "framework", {"f": profile["framework"]})  # prose framework -> expectations, by hash
         if profile.get("mapping"):
             await self.store.aput(self.NS, "mapping", {"m": profile["mapping"]})  # which evidence shows which expectation, by item content
-        marker = {k: profile[k] for k in ("cursors", "last_run", "backfill_done", "gaps", "coverage", "repo_scope", "source_selection", "grouping_version") if k in profile}
+        marker = {k: profile[k] for k in ("cursors", "last_run", "backfill_done", "gaps", "coverage", "repo_scope", "source_selection", "grouping_version", "selected_repos", "selected_github_cursor", "selected_scope_complete", "source_setup", "scope_sync") if k in profile}
         marker.update(schema=SCHEMA, n_items=len(rows))
         return {"marker": marker}
 
@@ -173,4 +175,3 @@ def platform_store() -> Any | None:
         return get_store()
     except Exception:  # noqa: BLE001
         return None
-
