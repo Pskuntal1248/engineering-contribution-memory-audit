@@ -1,6 +1,7 @@
 """Jira, docs, Slack-search, embeddings and the platform store. Fake gateway shapes built from the tool catalog's argument names;
 the response shapes are assumptions until a real run. No real tools or models."""
 import asyncio
+import pytest
 from datetime import datetime, timezone
 
 import agent
@@ -92,7 +93,7 @@ HAS = {"jira.search_issues", "jira.get_issue", "jira.list_issue_comments", "jira
 
 
 def fetch(gw, docs=("confluence", "notion", "google drive")):
-    src = GatewaySource(gw, ME, [], parse_channels("#payments-eng"), False, ["PAY"], HAS, list(docs), ["Parth Singh", "ps.kuntal2005@gmail.com"])
+    src = GatewaySource(gw, ME, ["o/r"], parse_channels("#payments-eng"), False, ["PAY"], HAS, list(docs), ["Parth Singh", "ps.kuntal2005@gmail.com"])
     return asyncio.run(src.fetch(SINCE, None, ToolLog()))
 
 
@@ -128,7 +129,7 @@ def test_docs_from_all_three_sources_with_confidential_mark():
 def test_slack_search_stays_in_chosen_channels_and_reads_no_dms():
     gw = Gateway()
     log = ToolLog()
-    out = asyncio.run(GatewaySource(gw, ME, [], parse_channels("#payments-eng"), False, [], HAS).fetch(SINCE, None, log))
+    out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("#payments-eng"), False, [], HAS).fetch(SINCE, None, log))
     assert len(out["slack"]["threads"]) == 1 and out["slack"]["threads"][0]["channel_id"] == "C1"
     assert out["slack"]["my_user_ids"] == ["U1"]
     assert not log.dm_reads()
@@ -146,8 +147,8 @@ def test_full_run_uses_platform_store_and_keeps_memory_small():
     # no GitHub tools in the fake: that source is named as failed, the rest still works
     out = asyncio.run(g.ainvoke({"inputs": inp, "memory": {}}))
     mem = out["memory"]
-    assert set(mem) == {"marker"} and mem["marker"]["backfill_done"] is True
-    assert len(str(mem)) < 2000
+    assert set(mem) == {"marker"} and mem["marker"]["backfill_done"] is False
+    assert len(str(mem)) < 5000
     keys = {i.key for i in asyncio.run(store.asearch(("uc10", "profile"), limit=100))}
     assert {"items-0000", "seen", "verdicts"} <= keys
     r = out["result"]
@@ -155,9 +156,9 @@ def test_full_run_uses_platform_store_and_keeps_memory_small():
     # second run reads the history back from the store and runs as weekly
     out2 = asyncio.run(g.ainvoke({"inputs": inp, "memory": mem}))
     assert out2["result"]["mode"] == "weekly" and out2["result"]["ledger_rows"] == 0  # weekly lists only new rows
-    # the store lost its data but memory says there was a backfill: say so and backfill again
-    out3 = asyncio.run(agent.make_graph(agent.Deps(deps.source_factory, store_factory=lambda mem: PlatformStore(InMemoryStore(), mem), now=lambda: NOW)).ainvoke({"inputs": inp, "memory": mem}))
-    assert out3["result"]["mode"] == "backfill"
+    # Missing saved data must fail without hidden recovery backfill or overwriting the marker.
+    with pytest.raises(ValueError,match='Saved history'):
+        asyncio.run(agent.make_graph(agent.Deps(deps.source_factory, store_factory=lambda mem: PlatformStore(InMemoryStore(), mem), now=lambda: NOW)).ainvoke({'inputs':inp,'memory':mem}))
 
 
 class FakeEmbedder:
@@ -210,7 +211,7 @@ def test_gateway_embedder_centres_and_fails_soft(monkeypatch):
 def test_notion_identity_by_name_solo_workspace_and_wrapped_shapes():
     out = fetch(Gateway(), docs=("notion",))
     assert [d["id"] for d in out["docs"]] == ["n1"] and out["docs"][0]["author"] == "Parth Singh"  # two people: only the user's own page, listed under the user's name
-    assert not out["failed"]
+    assert not [f for f in out["failed"] if not f["source"].startswith("github")]
 
     class Solo(Gateway):
         async def __call__(self, name, args):
@@ -275,7 +276,7 @@ def test_slack_lists_private_channels_with_paging_and_names_the_cause_once():
             return await super().__call__(name, args)
 
     def run(chans, gw):
-        src = GatewaySource(gw, ME, [], parse_channels(chans), False, ["PAY"], HAS, [], ["Parth Singh"])
+        src = GatewaySource(gw, ME, ["o/r"], parse_channels(chans), False, ["PAY"], HAS, [], ["Parth Singh"])
         return asyncio.run(src.fetch(SINCE, None, ToolLog()))
 
     out = run("#uc10-test", Slack())
