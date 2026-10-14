@@ -65,4 +65,5 @@ def test_explicit_display_name_wins_over_connected_name():
     async def who():return {'login':'Pskuntal1248','name':'Other GitHub name'}
     out=run({**INP,'github_username':'','display_name':'Typed Name'},who)
     assert out['inputs']['display_name']=='Typed Name'
-    assert 'separate from your display name' in str(out['result']['notes'])
+    assert 'connected GitHub account: Pskuntal1248' in str(out['result']['notes'])
+    assert 'display name entered in the form' not in str(out['result']['notes'])
