@@ -32,7 +32,7 @@ async def pages(call, name, args, keys):
     raise RuntimeError("listing exceeded page limit; completeness unverified")
 
 
-async def discover(call, username, since, until, excluded, log):
+async def discover(call, username, since, until, excluded, log, metadata=None):
     async def invoke(name, args):
         log.add(name, **args)
         return await call(name, args)
@@ -51,6 +51,8 @@ async def discover(call, username, since, until, excluded, log):
         if "/" not in full:
             raise RuntimeError("repository full name could not be verified")
         by_name.setdefault(full.lower(), full)
+        if metadata is not None:
+            metadata[full.lower()] = r
     excluded = {r.lower() for r in excluded}
     names = [v for k, v in by_name.items() if k not in excluded]
     selected, no_commits, failures = [], [], []
@@ -61,7 +63,7 @@ async def discover(call, username, since, until, excluded, log):
             try:
                 # One result is enough to prove eligibility, including forks. Empty is
                 # valid only for a successful response; errors are never "no commits".
-                args = {"owner": owner, "repo": name, "author": username, "since": since, "until": until, "per_page": 1, "page": 1}
+                args = {"owner": owner, "repo": name, "author": username, "since": since, "until": until, "per_page": 100, "page": 1}
                 response = await invoke("github.list_commits", args)
                 if bad := failed_payload(response):
                     raise RuntimeError(bad)
