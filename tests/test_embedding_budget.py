@@ -221,7 +221,7 @@ def go(inputs, store, n_docs, ep=None, llm=None, request=None, now=NOW, embedder
     base = {"github_username": "u", "repos_or_org": "o/r", "role_and_level": "Software Engineer II", "jira_projects": "PAY", "docs_source": "Google Drive", **inputs}
     if request:
         base["request"] = request
-    return asyncio.run(agent.make_graph(deps).ainvoke({"inputs": base, "memory": go.mem.get(id(store), {})})), emb
+    return asyncio.run(agent.make_graph(deps).ainvoke({"inputs": base, "memory": go.mem.get(store, {})})), emb
 
 
 go.mem = {}
@@ -230,7 +230,7 @@ go.mem = {}
 def run(inputs, store, n_docs, **kw):
     out, emb = go(inputs, store, n_docs, **kw)
     if out.get("memory"):
-        go.mem[id(store)] = out["memory"]
+        go.mem[store] = out["memory"]
     return out, emb
 
 
