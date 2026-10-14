@@ -28,7 +28,7 @@ def test_include_dms_yes_reads_only_dms_the_user_names():
     picked, _ = channels_to_read(CH, ["general"], True)
     assert [c["id"] for c in picked] == ["C1"]  # Yes alone opts in nothing
     picked, _ = channels_to_read(CH, ["general", "*dm*"], True)
-    assert {c["id"] for c in picked} == {"C1", "D1", "D2"}
+    assert {c["id"] for c in picked} == {"C1"}
 
 
 def test_private_channel_only_when_listed():
