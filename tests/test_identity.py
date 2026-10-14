@@ -49,4 +49,4 @@ def test_blank_jira_site_comes_from_account_and_failure_is_clear():
     async def nosite():
         return ""
     out = run({**INP, "jira_site": ""}, None, site=nosite)
-    assert "Not covered:" in out["corpus"]["summary"] and out["result"]["status"] == "completed"
+    assert "Not covered:" in out["corpus"]["summary"] and out["result"]["status"] == "partial"
