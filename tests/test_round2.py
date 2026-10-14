@@ -168,9 +168,9 @@ def test_removed_ask_input_is_ignored_with_no_routing_and_no_note():
 def test_manifest_has_20_inputs_without_ask_and_keeps_the_dropdown_and_both_review_dates():
     m = yaml.safe_load(open("manifest.yaml"))
     names = [i["name"] for i in m["inputs"]]
-    assert len(names) == 21 and "ask" not in names and len(set(names)) == 21
+    assert len(names) == 19 and "ask" not in names and len(set(names)) == 19
     by = {i["name"]: i for i in m["inputs"]}
-    assert by["request"]["options"] == ["update_source_setup", "enrich_new_scopes", "weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"] and by["request"]["default"] == "weekly_update"
+    assert by["request"]["options"] == ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"] and by["request"]["default"] == "weekly_update"
     assert by["period_from"]["type"] == "date" and by["period_to"]["type"] == "date"
     assert "team_changes" in names and "ask" not in open("manifest.yaml").read().replace("task", "")
     import ask
