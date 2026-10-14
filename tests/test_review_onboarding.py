@@ -12,7 +12,7 @@ def test_github_only_never_looks_up_jira():
     async def site():
         raise AssertionError("Jira not selected")
     deps = agent.Deps(lambda cfg: Src(), llm=None, now=lambda: NOW, identity=lambda: None, site=site)
-    out = asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {"github_username": "me", "role_and_level": "SE"}, "memory": {}}))
+    out = asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {"github_username": "me", "role_and_level": "SE", "repos_or_org": "o/r"}, "memory": {}}))
     assert out["result"]["status"] == "completed"
 
 
@@ -46,13 +46,10 @@ class ScopeGateway:
 
 
 def test_discovery_private_org_fork_exclusions_and_unverified():
-    gw = ScopeGateway()
-    selected, scope, failed = asyncio.run(discover(gw, "me", "2026-04-14T00:00:00Z", "2026-10-14T00:00:00Z", ["me/excluded"], ToolLog()))
-    assert selected == ["me/private", "org/work"]
-    assert scope["no_commits"] == ["me/fork"] and scope["unverified"] == ["org/unknown"]
-    assert not any(a.get("repo") == "excluded" for n, a in gw.calls)
-    assert "1 others skipped" in summary(scope)
-    assert all(a["author"] == "me" and a["since"] == "2026-04-14T00:00:00Z" for n,a in gw.calls if n == "github.list_commits")
+    async def forbidden(*args):
+        raise AssertionError('Discovery must not call any API')
+    with pytest.raises(ValueError, match='disabled'):
+        asyncio.run(discover(forbidden, 'me', '', '', [], ToolLog()))
 
 
 def test_allowlist_disables_account_discovery_and_applies_exclusion():
@@ -70,9 +67,9 @@ def test_allowlist_disables_account_discovery_and_applies_exclusion():
 
 def test_form_onboarding_required_only_role():
     m = yaml.safe_load(open('manifest.yaml'))
-    assert len(m['inputs']) == 20
-    assert [x['name'] for x in m['inputs'] if x.get('required')] == ['role_and_level']
-    assert all(x['label'].startswith('Advanced:') for x in m['inputs'] if x['name'] not in {'github_username','role_and_level','request'})
+    assert len(m['inputs']) == 21
+    assert [x['name'] for x in m['inputs'] if x.get('required')] == ['role_and_level', 'repos_or_org']
+    assert all(x['label'].startswith('Advanced:') for x in m['inputs'] if x['name'] not in {'github_username','role_and_level','request','repos_or_org'})
 
 
 def test_calendar_month_boundary_leap_and_clamp():
@@ -103,21 +100,17 @@ def test_coverage_summary_once_and_persists_for_on_demand():
 
 
 def test_discovery_pages_repeat_is_unverifiable_not_no_commits():
-    async def call(n,a):
-        if n == 'github.list_repositories_for_the_authenticated_user':
-            return [{'id':1,'full_name':'me/r'}]
-        raise AssertionError('must stop before qualification')
-    with pytest.raises(RuntimeError,match='repeated'):
-        asyncio.run(discover(call,'me','2026-04-14T00:00:00Z','2026-10-14T00:00:00Z',[],ToolLog()))
+    async def forbidden(*args):
+        raise AssertionError('Discovery must not call any API')
+    with pytest.raises(ValueError, match='disabled'):
+        asyncio.run(discover(forbidden, 'me', '', '', [], ToolLog()))
 
 
 def test_fork_with_commit_is_included():
-    class ForkGateway(ScopeGateway):
-        async def __call__(self,n,a):
-            if n == 'github.list_commits' and a['repo'] == 'fork': return [{'sha':'forksha'}]
-            return await super().__call__(n,a)
-    selected,scope,failed = asyncio.run(discover(ForkGateway(),'me','2026-04-14T00:00:00Z','2026-10-14T00:00:00Z',[],ToolLog()))
-    assert 'me/fork' in selected
+    async def forbidden(*args):
+        raise AssertionError('Discovery must not call any API')
+    with pytest.raises(ValueError, match='disabled'):
+        asyncio.run(discover(forbidden, 'me', '', '', [], ToolLog()))
 
 
 def test_adding_source_backfills_instead_of_github_cursor_only():
@@ -132,26 +125,25 @@ def test_adding_source_backfills_instead_of_github_cursor_only():
     g = agent.make_graph(deps)
     first = asyncio.run(g.ainvoke({'inputs':{**INP,'jira_projects':'','slack_channels':'','docs_source':'None'},'memory':{}}))
     second = asyncio.run(g.ainvoke({'inputs':INP,'memory':first['memory']}))
-    assert second['result']['mode'] == 'backfill'
-    assert seen[0] == seen[1]
+    assert second['result']['mode'] == 'weekly'
+    assert seen[0] != seen[2]  # normal run only updates the existing GitHub scope
+    from store import NativeMemoryStore
+    assert NativeMemoryStore(second['memory']).load()['source_setup']['pending_config']['jira_projects']
+    seen.clear()
+    third = asyncio.run(g.ainvoke({'inputs':{**INP,'request':'enrich_new_scopes'},'memory':second['memory']}))
+    assert third['result']['mode']=='enrichment' and len(seen)==15
+    assert len(set(seen))==1
 
 
 def test_discovery_arguments_match_live_catalog_schemas():
-    import json,jsonschema
-    schemas = {r['name']:r['parameters'] for r in json.load(open('docs/discovery-tool-schemas.json'))}
-    gw=ScopeGateway()
-    asyncio.run(discover(gw,'me','2026-04-14T00:00:00Z','2026-10-14T00:00:00Z',[],ToolLog()))
-    for n,a in gw.calls: jsonschema.validate(a,schemas[n])
+    async def forbidden(*args):
+        raise AssertionError('Discovery must not call any API')
+    with pytest.raises(ValueError, match='disabled'):
+        asyncio.run(discover(forbidden, 'me', '', '', [], ToolLog()))
 
 
 def test_branch_only_commits_qualify_repo():
-    class BranchOnly(ScopeGateway):
-        async def __call__(self,n,a):
-            if n == "github.list_commits" and a["repo"] == "fork":
-                self.calls.append((n,a))
-                return [{"sha":"feature"}] if a.get("sha") == "feature-only" else []
-            return await super().__call__(n,a)
-    gw = BranchOnly()
-    selected,scope,failed = asyncio.run(discover(gw,"me","2026-04-14T00:00:00Z","2026-10-14T00:00:00Z",[],ToolLog()))
-    assert "me/fork" in selected and "me/fork" not in scope["no_commits"]
-    assert any(n == "github.list_commits" and a.get("sha") == "feature-only" for n,a in gw.calls)
+    async def forbidden(*args):
+        raise AssertionError('Discovery must not call any API')
+    with pytest.raises(ValueError, match='disabled'):
+        asyncio.run(discover(forbidden, 'me', '', '', [], ToolLog()))
