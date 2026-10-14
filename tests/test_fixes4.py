@@ -39,7 +39,7 @@ def test_channel_matched_by_id_as_well_as_name():
 
 def test_unknown_channel_lists_visible_channels_and_suggests():
     gw = Gateway()
-    out = asyncio.run(GatewaySource(gw, ME, [], parse_channels("payments-engr"), False, [], HAS).fetch(SINCE, None, ToolLog()))
+    out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("payments-engr"), False, [], HAS).fetch(SINCE, None, ToolLog()))
     err = next(f["error"] for f in out["failed"] if f["source"] == "slack:#payments-engr")
     assert "Did you mean: #payments-eng?" in err
     assert "#random" in err  # the visible list is shown so the user can choose
@@ -50,7 +50,7 @@ def test_unknown_channel_lists_visible_channels_and_suggests():
 def test_mixed_valid_and_unknown_channels_reads_nothing():
     # one bad channel name stops the whole read - the good channel is not read either
     gw = Gateway()
-    out = asyncio.run(GatewaySource(gw, ME, [], parse_channels("payments-eng,payments-engr"), False, [], HAS).fetch(SINCE, None, ToolLog()))
+    out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("payments-eng,payments-engr"), False, [], HAS).fetch(SINCE, None, ToolLog()))
     assert out["slack"]["threads"] == []
     assert [n for n, _ in gw.calls] == ["slack.list_channels"]
     assert any(f["source"] == "preflight" and "no contribution data was read at all" in f["error"] for f in out["failed"])
@@ -58,7 +58,7 @@ def test_mixed_valid_and_unknown_channels_reads_nothing():
 
 def test_channel_id_accepted_end_to_end():
     gw = Gateway()
-    out = asyncio.run(GatewaySource(gw, ME, [], parse_channels("C1"), False, [], HAS).fetch(SINCE, None, ToolLog()))
+    out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("C1"), False, [], HAS).fetch(SINCE, None, ToolLog()))
     assert [t["channel_id"] for t in out["slack"]["threads"]] == ["C1"]
 
 
@@ -72,7 +72,7 @@ class JiraProjects(Gateway):
 
 
 def run_jira(gw, projects, has):
-    return asyncio.run(GatewaySource(gw, ME, [], parse_channels("#payments-eng"), False, projects, has, [], ["Parth Singh"]).fetch(SINCE, None, ToolLog()))
+    return asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("#payments-eng"), False, projects, has, [], ["Parth Singh"]).fetch(SINCE, None, ToolLog()))
 
 
 def test_jira_preflight_canonicalises_case():
@@ -150,39 +150,30 @@ INP = {"github_username": ME, "repos_or_org": "o/r", "jira_projects": "PAY", "sl
        "docs_source": "All three", "role_and_level": "Software Engineer", "display_name": "Parth Singh"}
 
 
-def test_blocked_first_run_saves_nothing_and_reports_blocked():
+def test_failed_slack_scope_does_not_discard_successful_other_sources():
     import agent
+    from store import PlatformStore
     from langgraph.store.memory import InMemoryStore
-    store = InMemoryStore()
-    gw = JiraProjects()
-    g = agent.make_graph(blocked_deps(gw, store))
-    bad = dict(INP, slack_channels="payments-engr")
-    out = asyncio.run(g.ainvoke({"inputs": bad, "memory": {}}))
-    assert out["result"]["status"] == "blocked" and out["result"]["model_calls"] == 0
-    assert "Run stopped" in out["corpus"]["title"]
-    assert out["memory"] == {}  # nothing was persisted
-    assert not asyncio.run(store.asearch(("uc10", "profile"), limit=100))
-    # a later run with the input fixed backfills normally - the blocked run never marked anything done
-    gw2 = JiraProjects()
-    g2 = agent.make_graph(blocked_deps(gw2, store))
-    out2 = asyncio.run(g2.ainvoke({"inputs": INP, "memory": {}}))
-    assert out2["result"]["status"] == "completed" and out2["result"]["mode"] == "backfill" and out2["memory"]["marker"]["backfill_done"] is True
+    store=InMemoryStore();gw=JiraProjects()
+    out=asyncio.run(agent.make_graph(blocked_deps(gw,store)).ainvoke({'inputs':dict(INP,slack_channels='payments-engr'),'memory':{}}))
+    profile=asyncio.run(PlatformStore(store,out['memory']).aload())
+    assert out['result']['status']=='completed' and profile['items']
+    assert not profile['scope_sync']['slack:payments-engr:No']['complete']
+    assert not profile['scope_sync']['slack:payments-engr:No']['cursor']
+    assert profile['scope_sync']['jira::PAY']['complete']
+    assert not any(n=='slack.read_history' for n,a in gw.calls)
 
 
-def test_blocked_weekly_run_leaves_the_saved_profile_untouched():
+def test_stale_weekly_source_fields_are_pending_not_replacements():
     import agent
+    from store import PlatformStore
     from langgraph.store.memory import InMemoryStore
-    store = InMemoryStore()
-    g = agent.make_graph(blocked_deps(JiraProjects(), store))
-    out = asyncio.run(g.ainvoke({"inputs": INP, "memory": {}}))
-    assert out["result"]["status"] == "completed"
-    mem = out["memory"]
-    keys_before = {i.key: i.value for i in asyncio.run(store.asearch(("uc10", "profile"), limit=100))}
-    bad = dict(INP, slack_channels="payments-engr")
-    out2 = asyncio.run(agent.make_graph(blocked_deps(JiraProjects(), store)).ainvoke({"inputs": bad, "memory": mem}))
-    assert out2["result"]["status"] == "blocked" and out2["memory"] == mem  # saved memory passes through untouched
-    keys_after = {i.key: i.value for i in asyncio.run(store.asearch(("uc10", "profile"), limit=100))}
-    assert keys_after == keys_before  # the saved profile is byte-identical
-    # and the next good run is still a normal weekly update on the intact profile
-    out3 = asyncio.run(agent.make_graph(blocked_deps(JiraProjects(), store)).ainvoke({"inputs": INP, "memory": mem}))
-    assert out3["result"]["status"] == "completed" and out3["result"]["mode"] == "weekly"
+    store=InMemoryStore()
+    out=asyncio.run(agent.make_graph(blocked_deps(JiraProjects(),store)).ainvoke({'inputs':INP,'memory':{}}))
+    out2=asyncio.run(agent.make_graph(blocked_deps(JiraProjects(),store)).ainvoke({'inputs':dict(INP,slack_channels='payments-engr'),'memory':out['memory']}))
+    profile=asyncio.run(PlatformStore(store,out2['memory']).aload())
+    assert out2['result']['status']=='completed' and out2['result']['mode']=='weekly'
+    assert profile['source_setup']['config']['slack_channels']=='payments-eng'
+    assert profile['source_setup']['pending_config']['slack_channels']=='payments-eng, payments-engr'
+    assert profile['scope_sync']['slack:payments-eng:No']['complete']
+    assert 'slack:payments-engr:No' not in profile['scope_sync']
