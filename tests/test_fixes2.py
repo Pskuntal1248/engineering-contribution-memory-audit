@@ -65,6 +65,7 @@ def test_skills_count_distinct_work_not_pr_ticket_commit_separately():
     mk = lambda i, t, ks, title: Item(id=i, source="x", type=t, date="2026-09-01", title=title, keys=ks, meta={})
     its = [mk("a", "pr", ["PAY-101", "PAY-1"], "PAY-1 Add idempotency key"), mk("b", "ticket", ["PAY-1"], "PAY-1: Add idempotency key"),
            mk("c", "commit", ["PAY-101"], "PAY-101 add key"), mk("d", "pr", ["PAY-2"], "PAY-2 Retry")]
+    its[0].meta['branch']='feature/PAY-101-idempotency'
     assert len(_distinct_work(its)) == 2
 
 
@@ -429,5 +430,4 @@ def test_decision_voice_covers_imperative_and_proposes_forms():
     assert decision_voice("Use BM25 with a recency boost.") == "We will use BM25 with a recency boost."
     assert decision_voice("Proposes: move webhooks to a queue.") == "We propose to move webhooks to a queue."
     assert decision_voice("We will keep cron.") == "We will keep cron."
-
 
