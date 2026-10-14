@@ -316,7 +316,7 @@ async def fetch_confluence_v2(call: Call, since: str, log: ToolLog, out: dict, f
     for h in listed[:MAX_DOCS_PER_SOURCE]:
         ver = h.get("version") or {}
         modified = str(ver.get("createdAt") or h.get("createdAt") or "")
-        if modified[:10] and modified[:10] < since[:10]:
+        if modified[:10] and (modified[:10] < since[:10] or (getattr(call, "window_end", "") and modified >= call.window_end)):
             continue
         author_id, editor_id = str(h.get("authorId") or ""), str(ver.get("authorId") or "")
         if author_id not in mine_ids and editor_id not in mine_ids:
@@ -420,11 +420,11 @@ async def notion_user_id(call: Call, names: list[str], log: ToolLog, out: dict) 
 
     matches = [u for u in people if any(w and (w in label(u) or label(u).split("@")[0].strip() == w) for w in want)]
     if len(matches) == 1:
-        out["failed"].append({"source": "docs:notion", "error": "a Notion user matches your name, but a matching name is not proof of identity: set display_name to your Notion account email to confirm it"})
+        out["failed"].append({"source": "docs:notion", "error": "a Notion user matches your name, but a matching name is not proof of identity. The connected account identity is not available for Notion"})
     elif len(matches) > 1:  # a same-name collision is not identity evidence
-        out["failed"].append({"source": "docs:notion", "error": f"{len(matches)} Notion users match your name, so authorship cannot be verified: set display_name to your Notion account email"})
+        out["failed"].append({"source": "docs:notion", "error": f"{len(matches)} Notion users match your name, so authorship cannot be verified. The connected account identity is not available for Notion"})
     elif people:
-        out["failed"].append({"source": "docs:notion", "error": f"could not tell which of {len(people)} Notion users is you: set display_name to your Notion account email"})
+        out["failed"].append({"source": "docs:notion", "error": f"could not tell which of {len(people)} Notion users is you. The connected account identity is not available for Notion"})
     return ""
 
 
@@ -454,11 +454,14 @@ async def fetch_notion(call: Call, since: str, log: ToolLog, out: dict, names: l
     def uid(x: Any) -> str:
         return str((x or {}).get("id", "")) if isinstance(x, dict) else ""
 
-    recent = [p for p in pages if str(p.get("last_edited_time", "")) >= since][:MAX_DOCS_PER_SOURCE]
+    end = getattr(call, 'window_end', '')
+    recent = [p for p in pages if str(p.get('last_edited_time', '')) >= since and (not end or str(p.get('last_edited_time', '')) < end)][:MAX_DOCS_PER_SOURCE]
+    if cursor and pages and str(pages[-1].get('last_edited_time', '9999')) >= since:
+        out['capped'].append('notion page listing incomplete; history coverage was not advanced')
     if not me:  # no verified user id: reading bodies to hunt for name evidence is not authorized - nothing is opened
         if recent:
             out["capped"].append(f"notion: your Notion user could not be verified, so none of the {len(recent)} recent page(s) were read. "
-                                 "Set display_name to your Notion account email to restore docs coverage.")
+                                 "Notion coverage needs a verified connected account identity; names alone are not enough.")
         return
     sem = asyncio.Semaphore(DOC_PARALLEL)
     unverified = 0
@@ -656,4 +659,3 @@ async def fetch_slack_search(call: Call, picked: list[dict], since_ts: str, log:
             out["slack"]["threads"].append({"channel": by_id[cid].get("name", ""), "channel_id": cid, "messages": msgs})
 
     await asyncio.gather(*(one(c, t) for c, t in keys))
-
