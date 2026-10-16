@@ -19,6 +19,25 @@ _TRIVIAL = TRIVIAL_TITLE
 _PLACEHOLDER = re.compile(r"\bnot stated\b|model summary needed|\(unlinked\)", re.I)
 
 
+_PROBLEM_WORDS = re.compile(r'\b(fix(?:es|ed)?|bug|race|hotfix|mismatch(?:ing|es)?|regression|duplicat(?:e|ed|es)|dropped|failed|timed[- ]out|did not match|could not|locked out)\b', re.I)
+_UNRESOLVED = re.compile(r"\b(unresolved|not (?:yet )?(?:fixed|resolved|addressed)|remains|still open|future work|known (?:bug|issue)|won'?t fix|to be fixed)\b", re.I)
+
+
+def problem_evidence(i: Item) -> bool:
+    """A problem the item RESOLVED: problem language in a sentence that does not itself say the problem is still open."""
+    text = i.title + ' ' + i.text
+    return any(_PROBLEM_WORDS.search(s) and not _UNRESOLVED.search(s) for s in re.split(r'(?<=[.!?])\s+', text))
+
+
+def problem_summary(i: Item) -> str:
+    sentences = re.split(r'(?<=[.!?])\s+', i.text.strip())
+    problem = next((s for s in sentences if problem_evidence(Item(id='p', source=i.source, type=i.type, date=i.date, title='', text=s))), '')
+    problem = re.sub(r'^\s*[A-Z][A-Z0-9]+-\d+\s*:\s*', '', problem)
+    action = next((s for s in sentences if re.match(r'\s*(Adds?|Fix(?:es|ed)?|Introduc(?:es|ed)|Implement(?:s|ed)|Restore(?:s|d))\b', s, re.I) and s != problem), '')
+    body = ('Source describes: ' + problem + (' ' + action if action else '')) if problem else 'I fixed ' + i.title + '.'
+    return clip(body, 420) + f' Shipped on {day(i)}.'
+
+
 _DANGLING = {"a", "an", "the", "of", "to", "and", "or", "for", "with", "in", "on", "by", "at", "from", "how", "is", "are", "i", "we"}
 
 
@@ -415,34 +434,56 @@ def _empty_period(items: list[Item], date_from: str, date_to: str) -> str:
     return f"None found in this period. The saved items are dated {ds[0]} to {ds[-1]}, so no project, thread or decision falls inside it."
 
 
-def stories(profile: dict[str, Any], by_id: dict[str, Item], terms: set[str], keep_internal: bool) -> list[dict[str, Any]]:
-    """5-8 stories from problems solved, decisions and the biggest projects; internal names and figures stripped."""
-    pool: list[tuple[str, str, list[str], str]] = []
+def stories(profile: dict[str, Any], by_id: dict[str, Item], terms: set[str], keep_internal: bool, names=()) -> list[dict[str, Any]]:
+    """Use only source-qualified actions. Cached model verdicts cannot bypass eligibility."""
+    from interview import solved_text, authored_text, proposed, delivery_item, DISAGREE, ACCEPTED
+    pool = []
     for v in profile["invisible"]:
-        if v["label"] == "problem_solved":
-            pool.append(("A hard bug", v["summary"], v["evidence"], "Tell me about a hard bug you debugged."))
-    for d in profile["decisions"]:
-        if re.search(r"\b(instead of|rather than|versus|vs\.?|trade-?offs?|over using|alternative|but)\b", d["summary"], re.I):
-            pool.append(("A decision with trade-offs", d["summary"], d["evidence"], "Tell me about a technical decision you made and its trade-offs."))
-        else:  # the sources state no alternative, so it is not presented as a trade-off story
-            pool.append(("A technical decision", d["summary"], d["evidence"], "Tell me about a technical decision you made."))
-    for v in profile["invisible"]:
-        if v["label"] in {"mentoring", "help_given"}:
-            pool.append(("Helping a teammate", v["summary"], v["evidence"], "Tell me about a time you helped someone unblock."))
-    for p in sorted(profile["projects"], key=lambda p: -len(p["evidence"]))[:3]:
-        pool.append((f"Delivering {p['name']}", "; ".join(x.rstrip(". ") for x in (p["outcome"], "" if _PLACEHOLDER.search(p["goal"]) else f"goal: {p['goal']}") if x and not _PLACEHOLDER.search(x)) + ".", p["evidence"][:6], "Tell me about a project you delivered end to end."))
-    out, seen, per_title = [], set(), {}
-    for title, body, ev, q in pool:
-        if body in seen or per_title.get(title, 0) >= 2:
+        ev = [e for e in v["evidence"] if e in by_id]
+        if not ev:
             continue
-        seen.add(body)
-        per_title[title] = per_title.get(title, 0) + 1
-        conf = [e for e in ev if e in set(profile.get("confidential", []))]
-        text = scrub(body, terms, keep_internal)
-        if per_title[title] > 1:  # a second story of the same kind is named by its subject, so no two headings read the same
-            subj = re.sub(r"\s*\[[^\]]*\]\s*$", "", by_id[ev[0]].title).strip() if ev and ev[0] in by_id else ""
-            title = f"{title}: {short(subj, 50)}" if subj else title
-        out.append({"title": title, "story": ((FLAG + " ") if conf else "") + text, "question": q, "evidence": ev[:4]})
+        it = by_id[ev[0]]
+        action = solved_text(it, names)
+        if v["label"] == "problem_solved" and action:
+            pool.append(("A hard bug", "My action: " + action, ev, "Tell me about a hard bug you debugged."))
+        own = authored_text(it, names)
+        if DISAGREE.search(own) and ACCEPTED.search(own):
+            pool.append(("A disagreement", "My action and resolution: " + own, ev, "Tell me about a disagreement and how you handled it."))
+        if v["label"] in {"mentoring", "help_given"} and own and re.search(r"\b(?:mentored|explained|walked|paired|showed|taught|shared)\b", own, re.I):
+            pool.append(("Helping a teammate", "My action: " + own, ev, "Tell me about a time you helped someone unblock."))
+    for d in profile["decisions"]:
+        ev = [e for e in d["evidence"] if e in by_id]
+        if not ev:
+            continue
+        if any(proposed(by_id[e]) for e in ev):
+            pool.append(("A design proposal", "I contributed this proposal; acceptance is not established by the saved evidence. " + by_id[ev[0]].title, ev, "Tell me about a design proposal you contributed to."))
+            continue
+        text = " ".join(by_id[e].text + " " + str(by_id[e].meta.get("dsum", "")) for e in ev)
+        if not ACCEPTED.search(text) and not any(by_id[e].meta.get("decision_text") for e in ev):
+            pool.append(("A design discussion", "I contributed to this design record. The saved evidence does not establish an accepted decision. " + by_id[ev[0]].title,
+                         ev, "Tell me about a design discussion you contributed to."))
+            continue
+        trade = bool(re.search(r"\b(instead of|rather than|versus|vs\.?|trade-?offs?|alternative)\b", text, re.I))
+        pool.append(("A decision with trade-offs" if trade else "A technical decision", d["summary"], ev,
+                     "Tell me about a technical decision you contributed to and its trade-offs." if trade else "Tell me about a technical decision you contributed to."))
+    for p in sorted(profile["projects"], key=lambda p: -len(p["evidence"])):
+        ev = [e for e in p["evidence"] if e in by_id and delivery_item(by_id[e])]
+        if not ev:
+            continue
+        role = p.get("role", "contributed")
+        body = "My recorded role: " + role + ". " + (p["outcome"] if not _PLACEHOLDER.search(p["outcome"]) else "Outcome not stated.")
+        if any(by_id[e].meta.get("reverted") for e in p["evidence"] if e in by_id):
+            body += " Rolled-back changes are excluded from the delivery evidence below."
+        pool.append(("Contributing to " + p["name"], body, ev[:6], "Tell me about your contribution to a project and its outcome."))
+    out, seen = [], set()
+    for title, body, ev, q in pool:
+        key = (title, tuple(ev))
+        if key in seen:
+            continue
+        seen.add(key)
+        conf = any(e in set(profile.get("confidential", [])) for e in ev)
+        out.append({"title": title, "story": (FLAG + " " if conf else "") + scrub(body, terms, keep_internal),
+                    "question": q, "evidence": ev[:4]})
         if len(out) == 8:
             break
     return out
@@ -481,10 +522,10 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
         return {"heading": heading, "bullets": bullets} if bullets else {"heading": heading, "body": none}
     if kind in {"backfill", "profile"}:
         mine_ = [i for i in items if i.meta.get("mine")]
-        fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and re.search(r"\b(fix|fixes|fixed|bug|race|hotfix|mismatch|regression)\b", i.title, re.I)
+        fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and problem_evidence(i)
                  and (shipped(i) if i.type == "pr" else str(i.meta.get("status", "")).lower() in {"done", "closed", "resolved"})]
         slack_fixes = [v for v in profile["invisible"] if v["label"] == "problem_solved"]
-        solved = [block(short(i.title, 80), f"I fixed this and it shipped on {day(i)}.", items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
+        solved = [block(short(i.title, 80), problem_summary(i), items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
         def _thread_block(v: dict[str, Any]) -> str:
             it = by_id[v["evidence"][0]]
             co = [c for c in v.get("co_contributors", []) if not _SLACK_ID.fullmatch(c)][:2]
@@ -527,29 +568,51 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
         sections.insert(0, {"heading": f"Impact statements {date_from or 'all'} to {date_to or 'now'}",
                             "body": "\n\n".join(proj_ + [block(_st_title(s_, by_id), s_.text, items=_ev(s_.evidence, by_id, 2)) for s_ in other]) or _empty_period(items, date_from, date_to)})
     if kind == "interview_stories":
-        st = stories(profile, by_id, terms, keep_internal)
+        st = stories(profile, by_id, terms, keep_internal, names)
         sections.insert(0, {"heading": "Interview stories", "sections": [{"heading": scrub(x["title"], terms, keep_internal), "body": x["story"], "bullets": [f"Answers: {x['question']}"] + [f"Evidence: [{scrub(_lab(i), terms, keep_internal)}]({i.url})" if i.url else f"Evidence: {scrub(_lab(i), terms, keep_internal)}" for i in _ev(x["evidence"], by_id, 2)]} for x in st]})
         if not keep_internal:
             linked = {i.url for x in st for i in _ev(x["evidence"], by_id, 2) if i.url and has_term(i.url, terms)} | {str(r[5]) for r in rows if r[5] and has_term(str(r[5]), terms)}
             if linked:  # the links are the evidence, so they are kept - but they carry the names the stories had stripped
                 run_notes.append(f"interview stories: {len(linked)} link URL(s) (story evidence and the ledger) contain a redacted or internal name (the repo, organisation or Jira site). "
                                  "The links are kept so every story stays linked to its evidence, which means the stories are NOT safe to share as they are: strip or replace those URLs first (official AC12 check not run).")
-        sections.insert(1, {"heading": "Coverage", "body": f"{len(st)} stor{'y has' if len(st) == 1 else 'ies have'} evidence behind them. Stories for a disagreement are only included when a thread or PR discussion shows one; none is invented."})
-    short_notes = [f"{f['source']}: {clip(f["error"], 420)}" for f in failed] + [n for n in run_notes if not n.startswith(("topic grouping used", "capped: notion: single"))]
-    if short_notes:
-        sections.append({"heading": "What could not be done", "bullets": short_notes[:6]})
+        sections.insert(1, {"heading": "Coverage", "body": f"{len(st)} evidence-qualified story draft(s). " + (f"Below the requested 5-8: only {len(st)} eligible stories were supported by the saved evidence. No extra stories were invented. " if len(st) < 5 else "") + "Proposals are labelled as proposals; project questions do not assume end-to-end ownership. Disagreement stories require an attributed disagreement and resolution."})
+    from report_notes import split_notes, FALLBACK
+    info_notes, skipped_notes, limit_notes = split_notes(run_notes)
+    failure_notes = [f"{f['source']}: {clip(f["error"], 420)}" for f in failed] + limit_notes
+    if failure_notes:
+        sections.append({"heading": "What could not be done", "bullets": list(dict.fromkeys(failure_notes))})
+    if info_notes:
+        sections.append({"heading": "Run info", "bullets": info_notes})
+    if skipped_notes:
+        sections.append({"heading": "Skipped features", "bullets": skipped_notes})
+    run_notes = info_notes + skipped_notes + limit_notes
     sections = [s_ for s_ in sections if s_.get("bullets") or s_.get("table") or s_.get("body") or s_.get("sections") or s_.get("facts")]
     # The platform's CSV export is the FIRST TABLE in the corpus, so the ledger is the only table and sits last (an appendix).
     sections.append({"heading": "Appendix: item ledger (also the CSV download)",
                      "body": f"{len(rows)} items: " + ", ".join(f"{n} {t}{'' if n == 1 else 's'}" for t, n in _type_counts([i for i in items if i.id in new_ids] if weekly_kind else items)) + (f" (newest {LEDGER_CAP} of {len(items)})" if trunc else "")
                      + ". A PR, its commits and its ticket are separate rows for the same change. Reverts, reverted PRs, lockfile-only PRs and trivial commits are listed but not counted.",
                      **({"table": {"columns": ledger.COLUMNS, "rows": rows}} if rows else {})})
-    summary_text = f"{s['prs_shipped']} PR{'' if s['prs_shipped'] == 1 else 's'} shipped, {s['reviews_given']} review{'' if s['reviews_given'] == 1 else 's'}, {len(profile['invisible'])} piece{'' if len(profile['invisible']) == 1 else 's'} of invisible work{_inv_note(profile)}, {len(profile['decisions'])} decision{'' if len(profile['decisions']) == 1 else 's'}. Every item below links to its source."
+    from interview import proposed, ACCEPTED
+    def decision_counts(records):
+        established, proposals, unconfirmed = 0, 0, 0
+        for record in records:
+            ev = [by_id[e] for e in record["evidence"] if e in by_id]
+            if any(proposed(it) for it in ev):
+                proposals += 1
+            elif ev and any(ACCEPTED.search(it.text + " " + str(it.meta.get("dsum", ""))) or it.meta.get("decision_text") for it in ev):
+                established += 1
+            else:
+                unconfirmed += 1
+        return established, proposals, unconfirmed
+    nd, np, nu = decision_counts(profile["decisions"])
+    def decision_label(d, p, u):
+        return f"{d} established decision{'' if d == 1 else 's'}; {p} design proposal{'' if p == 1 else 's'}" + (f"; {u} design record(s) with acceptance unconfirmed" if u else "")
+    summary_text = f"{s['prs_shipped']} PR{'' if s['prs_shipped'] == 1 else 's'} shipped, {s['reviews_given']} review{'' if s['reviews_given'] == 1 else 's'}, {len(profile['invisible'])} piece{'' if len(profile['invisible']) == 1 else 's'} of invisible work{_inv_note(profile)}, {decision_label(nd, np, nu)}. Every item below links to its source."
     if weekly_kind:
         wp = sum(1 for i in _window_work(profile, by_id, new_ids) if i.type == "pr")
         wi = sum(1 for v in profile["invisible"] if any(e in new_ids for e in v["evidence"]))
-        wd = sum(1 for d in profile["decisions"] if any(e in new_ids for e in d["evidence"]))
-        summary_text = f"{wp} PR{'' if wp == 1 else 's'} shipped, {wi} piece{'' if wi == 1 else 's'} of invisible work, {wd} decision{'' if wd == 1 else 's'} in this window. Every item below links to its source."
+        wd, wp_, wu = decision_counts([d for d in profile["decisions"] if any(e in new_ids for e in d["evidence"])])
+        summary_text = f"{wp} PR{'' if wp == 1 else 's'} shipped, {wi} piece{'' if wi == 1 else 's'} of invisible work, {decision_label(wd, wp_, wu)} in this window. Every item below links to its source."
     if kind == "interview_stories" and not keep_internal:  # the page title, summary and the ledger's project and title columns are part of what is shared
         title, summary_text = scrub(title, terms, False, False), scrub(summary_text, terms, False, False)
         for sec in sections:
@@ -559,10 +622,10 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
               "sections": sections}  # no "sources" list: the page would number every item again (id, title, URL) under the report; links are in the body and the ledger table
     corpus = _clean_obj(corpus)
     result = {"title": title, "mode": kind, "stats": s, "projects": len(profile["projects"]), "invisible_work": len(profile["invisible"]),
-              "decisions": len(profile["decisions"]), "improvement_areas": [a["label"] for a in profile["improvements"]],
+              "decisions": nd, "design_proposals": np, "unconfirmed_design_records": nu, "decision_records": len(profile["decisions"]), "improvement_areas": [a["label"] for a in profile["improvements"]],
               "evidence_gaps": [{"expectation": g["expectation"], "status": g["status"]} for g in profile["gaps"]],
               "unavailable": list(dict.fromkeys(f["source"] for f in failed)),
-              "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "ledger_rows": len(rows)}
+              "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "analysis_status": "degraded" if FALLBACK in limit_notes else "not_flagged", "ledger_rows": len(rows)}
     return corpus, result
 
 

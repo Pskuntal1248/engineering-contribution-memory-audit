@@ -361,7 +361,8 @@ def normalize_thread(channel: str, channel_id: str, messages: list[dict[str, Any
         author=str(root.get("user_name") or root.get("user") or ""), keys=ticket_keys(text), refs=urls_in(text),
         meta={"channel": channel.lstrip("#"), "channel_id": channel_id, "messages": len(msgs), "my_messages": len(mine),
               "participants": sorted({str(m.get("user_name") or m.get("user")) for m in msgs}), "mine": True,
-              "root_is_mine": root.get("user") in user_ids},
+              "root_is_mine": root.get("user") in user_ids,
+              "my_names": sorted({str(m.get("user_name")) for m in mine if m.get("user_name")})},  # display names behind the user's own slack_user_ids: provably the user
     )
 
 

@@ -69,14 +69,14 @@ def test_repo_without_prs_still_shows_commits_and_filters():
 
 def test_lockfile_commit_size_excluded():
     out = run(INP)
-    item = [i for i in out["ctx"]["items"] if i.id.endswith("c" * 10)][0]
-    assert item.meta["size"]["lines"] < 100
+    item = [i for i in out["ctx"]["items"] if i["id"].endswith("c" * 10)][0]  # state is checkpointed, so items are plain dicts
+    assert item["meta"]["size"]["lines"] < 100
 
 
 def test_co_author_credited():
     out = run(INP)
-    item = [i for i in out["ctx"]["items"] if i.id.endswith("b" * 10)][0]
-    assert item.co_authors == ["Sam Lee"]
+    item = [i for i in out["ctx"]["items"] if i["id"].endswith("b" * 10)][0]  # state is checkpointed, so items are plain dicts
+    assert item["co_authors"] == ["Sam Lee"]
 
 
 def test_empty_run_still_saves_memory_and_followup_reads_it():

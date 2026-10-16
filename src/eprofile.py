@@ -8,7 +8,7 @@ import analysis
 from guards import TRIVIAL_TITLE
 import linking
 import metrics
-from guards import Budget, Statement, cap_role, confidential_ids, drop_colleague_assessments, keep_cited, predicts_promotion
+from guards import Budget, Statement, cap_role, confidential_ids, drop_colleague_assessments, keep_cited, predicts_promotion, self_aliases
 import embed
 import ladder
 from ladder import Expectation, parse_framework, statuses
@@ -27,6 +27,7 @@ def outputs_id(n: str) -> bool:
 
 def compact(it: Item, project: str) -> dict[str, Any]:
     m = it.meta
+    from interview import authored_text, proposed
     keep = {k: m[k] for k in ("mine", "confidential", "repo", "number", "merged_flag", "reverted", "is_revert", "received", "reopen_count", "status", "channel", "merged_ids", "state", "my_messages", "generated_only", "docs_only", "cycle_hours", "participants", "paths") if k in m}
     if it.type in {"doc", "pr"} and analysis._DECISION.search(it.text or ""):
         keep["decision_text"] = True  # the stored text is cut short; remember that the full text had decision wording
@@ -35,6 +36,10 @@ def compact(it: Item, project: str) -> dict[str, Any]:
         keep["owner"] = analysis.decision_owner(it.text)
     if it.type in {"doc", "pr"} and analysis.NEEDS_DECISION.search(it.text or ""):
         keep["needs_decision"] = True
+    if it.type == "thread":
+        keep["interview_action"] = authored_text(it)[:1200]
+    if it.type in {"doc", "pr"}:
+        keep["interview_proposed"] = proposed(it)
     keep["size"] = (m.get("size") or {}).get("lines") if m.get("size") else None
     return {"id": it.id, "s": it.source, "t": it.type, "date": it.date, "title": it.title[:160], "url": it.url, "text": it.text[:TEXT_KEEP],
             "author": it.author, "co": it.co_authors[:4], "keys": it.keys[:5], "p": project, "m": keep}
@@ -117,6 +122,7 @@ async def _embedding_step(embedder, items: list[Item], *, llm, budget: Budget, f
 async def build(items: list[Item], *, username: str, names: set[str], llm, budget: Budget, framework: str, role_and_level: str,
                 prior: dict[str, Any] | None, repo_aliases: dict[str, str] | None = None, embedder=None, team_changes: list[tuple[str, str]] | None = None, reuse_names: bool = False,
                 new_ids: set[str] | None = None) -> dict[str, Any]:
+    names = self_aliases(items, username, names)  # provable-self identities (own slack_user_ids' display names), so the user is never their own collaborator
     by_id = {i.id: i for i in items}
     dense, enotes = ({}, [])
     if embedder is not None and items:
@@ -197,7 +203,8 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
     card_store = [{"ev": sorted({id_key(e) for e in c["evidence"]})[:60], "name": c["name"], "goal": c.get("goal", "")[:200], "outcome": c.get("outcome", "")[:240]} for c in cards]
     for card in cards:
         prs = [by_id[e] for e in card["evidence"] if by_id[e].type == "pr"]
-        card["co_contributors"] = [n for n in {p for e in card["evidence"] for p in ([by_id[e].author] + by_id[e].co_authors)} if n and n.lower() != username.lower() and n not in names and not outputs_id(n)][:6]
+        self_names = {a.lower() for a in names}
+        card["co_contributors"] = [n for n in {p for e in card["evidence"] for p in ([by_id[e].author] + by_id[e].co_authors)} if n and n.lower() not in self_names and not outputs_id(n)][:6]
         if team_changes:  # team change mid-period: the project's items grouped by the team in force, with the change date
             split = linking.split_by_team([by_id[x] for x in clusters[card["project_id"]]["item_ids"]], team_changes)
             since = {t: d for d, t in team_changes}
