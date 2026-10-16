@@ -163,6 +163,22 @@ def cap_role(claimed: str, evidence: list[Item], username: str) -> str:
     return claimed
 
 
+def self_aliases(items, username: str, names) -> set[str]:
+    """Every identity this run can prove is the user: the GitHub username, the typed or account display name,
+    and the Slack display name(s) behind the user's own slack_user_ids. Learned aliases let attribution stay
+    correct when only the username is known (a Jira display name is never guessed - it is excluded only once
+    the same string is proven to be the user on Slack)."""
+    out = {n for n in names if n}
+    if username:
+        out.add(username)
+    for i in items:
+        if getattr(i, "type", None) == "thread":
+            out.update(n for n in (i.meta.get("my_names") or []) if n)
+            if i.meta.get("root_is_mine") and i.author:
+                out.add(i.author)
+    return out
+
+
 def co_contributors(evidence: list[Item], username: str) -> list[str]:
     names: dict[str, None] = {}
     for e in evidence:
