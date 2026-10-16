@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
 
@@ -15,7 +16,7 @@ from langgraph.graph import END, StateGraph
 
 import eprofile
 import outputs
-from guards import MODE_LIMITS, ToolLog, budget_for, internal_terms, parse_channels
+from guards import MODE_LIMITS, Budget, ToolLog, budget_for, internal_terms, parse_channels
 from models import Item, day, local_date_of, local_tz
 from pipeline import Config, ingest
 from sources import GatewaySource, Source
@@ -33,6 +34,41 @@ class State(TypedDict, total=False):
     ctx: dict
     corpus: dict
     result: dict
+
+
+def _freeze(ctx: dict) -> dict:
+    """ctx as plain data for graph state. The platform checkpoints the whole state after every step
+    (AGENT_STANDARD: "the whole state is checkpointed after every step"), and a live object cannot be
+    serialized - so only JSON-safe values may cross a node boundary."""
+    c = dict(ctx)
+    c.pop("store", None)  # a store is a live connection, rebuilt inside the node that needs it; never saved
+    if isinstance(c.get("cfg"), Config):
+        c["cfg"] = asdict(c["cfg"])
+    if isinstance(c.get("log"), ToolLog):
+        c["log"] = {"entries": c["log"].entries}
+    if isinstance(c.get("budget"), Budget):
+        c["budget"] = asdict(c["budget"])
+    if c.get("items") and isinstance(c["items"][0], Item):
+        c["items"] = [i.to_dict() for i in c["items"]]
+    if isinstance(c.get("new_ids"), set):
+        c["new_ids"] = sorted(c["new_ids"])
+    return c
+
+
+def _thaw(ctx: dict) -> dict:
+    """A node's working ctx: the plain state data back into the objects the code uses."""
+    c = dict(ctx)
+    if isinstance(c.get("cfg"), dict):
+        c["cfg"] = Config(**c["cfg"])
+    if isinstance(c.get("log"), dict):
+        c["log"] = ToolLog(entries=c["log"].get("entries", []))
+    if isinstance(c.get("budget"), dict):
+        c["budget"] = Budget(**c["budget"])
+    if c.get("items") and isinstance(c["items"][0], dict):
+        c["items"] = [Item.from_dict(i) for i in c["items"]]
+    if isinstance(c.get("new_ids"), list):
+        c["new_ids"] = set(c["new_ids"])
+    return c
 
 
 def _payload(raw: Any) -> Any:
@@ -82,6 +118,14 @@ def make_graph(deps: Deps):
         t = deps.now()
         return t.astimezone(local_tz(inp.get("timezone"))) if t.tzinfo else t
 
+    def _profile_store(mem):
+        """The run's profile store, rebuilt inside each node that needs it: a live store object must
+        never enter graph state, because the platform checkpoints the whole state after every step."""
+        if deps.store_factory:
+            return deps.store_factory(mem)
+        ps = platform_store()
+        return PlatformStore(ps, mem) if ps is not None else NativeMemoryStore(mem, 256)
+
     async def load(state: State) -> dict:
         inp = dict(state.get("inputs", {}))
         problems = validate_inputs(inp)
@@ -125,11 +169,7 @@ def make_graph(deps: Deps):
                 id_notes.append(f"Jira site taken from the connected Jira account: {inp['jira_site']}")
             else:
                 raise RuntimeError("Could not read the Jira site from the connected Jira account. Connect Jira, or type the Jira site URL and run again.")
-        if deps.store_factory:
-            store = deps.store_factory(mem)
-        else:
-            ps = platform_store()
-            store = PlatformStore(ps, mem) if ps is not None else NativeMemoryStore(mem, 256)
+        store = _profile_store(mem)
         prior = await store.aload() if hasattr(store, "aload") else store.load()
         req = str(inp.get("request") or "auto")
         if req == "weekly_update":
@@ -143,17 +183,17 @@ def make_graph(deps: Deps):
             req = "weekly" if prior.get("backfill_done") else "backfill"  # weekly only after a backfill really completed
         if req in ON_DEMAND and not has_memory:
             req = "backfill"  # nothing to report from yet
-        return {"inputs": inp, "ctx": {"started": time.monotonic(), "mode": req, "prior": prior, "store": store, "notes": id_notes + (["memory was unreadable, starting fresh"] if prior.get("_corrupt") else (["the saved history was missing from the store, so this run backfills again"] if prior.get("_store_empty") else []))}}
+        return {"inputs": inp, "ctx": {"started": time.monotonic(), "mode": req, "prior": prior, "notes": id_notes + (["memory was unreadable, starting fresh"] if prior.get("_corrupt") else (["the saved history was missing from the store, so this run backfills again"] if prior.get("_store_empty") else []))}}
 
     async def fetch(state: State) -> dict:
-        ctx = state["ctx"]
+        ctx = _thaw(state["ctx"])
         inp = state["inputs"]
         cfg = _cfg(inp)
         ctx["cfg"], ctx["log"] = cfg, ToolLog()
         mode = ctx["mode"]
         if mode in ON_DEMAND:  # answers come from the saved profile, no source reads
             ctx["raw"] = {"failed": [], "capped": []}
-            return {"ctx": ctx}
+            return {"ctx": _freeze(ctx)}
         start = backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)  # load() already refused a request that cannot be represented
         cursor = (ctx["prior"].get("cursors") or {}).get("github")
         since = since_for(cursor, start) if mode == "weekly" else start
@@ -162,10 +202,11 @@ def make_graph(deps: Deps):
         if hasattr(src, "deadline"):  # detail reads stop early enough to leave the analysis its share of the run's time limit
             src.deadline = ctx.get("started", time.monotonic()) + MODE_LIMITS["backfill" if mode == "backfill" else "weekly"][1] * 0.73  # 73%: 22 min of 30 (backfill), 3.6 of 5 (weekly)
         ctx["raw"] = await src.fetch(since, None, ctx["log"])
-        return {"ctx": ctx}
+        return {"ctx": _freeze(ctx)}
 
     async def analyse(state: State) -> dict:
-        ctx, inp, cfg = state["ctx"], state["inputs"], state["ctx"]["cfg"]
+        ctx, inp = _thaw(state["ctx"]), state["inputs"]
+        cfg = ctx["cfg"]
         mode, prior = ctx["mode"], ctx["prior"]
         names = {n for n in cfg.name_hints if n}
         budget = budget_for("backfill" if mode == "backfill" else "weekly" if mode == "weekly" else "on_demand")
@@ -178,7 +219,7 @@ def make_graph(deps: Deps):
         notes += list(ctx["raw"].get("info", []))
         if ctx["raw"].get("blocked"):  # preflight stopped the read: no analysis and no model calls on unverified inputs
             ctx["items"], ctx["new_ids"], ctx["failed"], ctx["notes"], ctx["budget"], ctx["prof"] = [], set(), failed, notes, budget, None
-            return {"ctx": ctx}
+            return {"ctx": _freeze(ctx)}
         if mode in {"backfill", "weekly"}:
             ing = ingest(ctx["raw"], cfg, ctx["log"])
             seen = set(prior.get("seen", []))
@@ -212,10 +253,11 @@ def make_graph(deps: Deps):
                                     new_ids=None if mode == "backfill" else new_ids)
         notes += prof["notes"]
         ctx["prof"], ctx["notes"], ctx["budget"] = prof, notes, budget
-        return {"ctx": ctx}
+        return {"ctx": _freeze(ctx)}
 
     async def render(state: State) -> dict:
-        ctx, inp, cfg = state["ctx"], state["inputs"], state["ctx"]["cfg"]
+        ctx, inp = _thaw(state["ctx"]), state["inputs"]
+        cfg = ctx["cfg"]
         if ctx["raw"].get("blocked"):  # a stopped run says so - it must not look like a completed profile
             bullets = [f"{f.get('source')}: {f.get('error')}" for f in ctx["failed"]]
             corpus = {"title": "Run stopped - fix the inputs and rerun",
@@ -227,7 +269,7 @@ def make_graph(deps: Deps):
                       "page_chars": len(outputs.to_markdown(corpus, with_tables=False))}
             outputs.write_local_copy(corpus, result=result)
             ctx["corpus"], ctx["result"] = corpus, result
-            return {"ctx": ctx, "corpus": corpus, "result": result}
+            return {"ctx": _freeze(ctx), "corpus": corpus, "result": result}
         items, prof, mode = ctx["items"], ctx["prof"], ctx["mode"]
         names = {n for n in cfg.name_hints if n}
         colleagues = sorted({a for i in items for a in [i.author, *i.co_authors, *(i.meta.get("participants") or [])] if a and a not in names and a.lower() != cfg.username.lower()})
@@ -265,15 +307,16 @@ def make_graph(deps: Deps):
         result["page_chars"] = len(outputs.to_markdown(corpus, with_tables=False))
         outputs.write_local_copy(corpus, result=result)
         ctx["corpus"], ctx["result"] = corpus, result
-        return {"ctx": ctx, "corpus": corpus, "result": result}
+        return {"ctx": _freeze(ctx), "corpus": corpus, "result": result}
 
     async def persist(state: State) -> dict:
-        ctx, inp = state["ctx"], state["inputs"]
-        if ctx["mode"] in ON_DEMAND and ctx.get("prof") and hasattr(ctx["store"], "asave_framework"):  # only the cache entries; the profile itself is not touched
+        ctx, inp = _thaw(state["ctx"]), state["inputs"]
+        store = _profile_store(state.get("memory"))
+        if ctx["mode"] in ON_DEMAND and ctx.get("prof") and hasattr(store, "asave_framework"):  # only the cache entries; the profile itself is not touched
             if ctx["prof"].get("framework_cache_new"):
-                await ctx["store"].asave_framework(ctx["prof"]["framework_cache"])
+                await store.asave_framework(ctx["prof"]["framework_cache"])
             if ctx["prof"].get("mapping_cache_new"):
-                await ctx["store"].asave_mapping(ctx["prof"]["mapping_cache"])
+                await store.asave_mapping(ctx["prof"]["mapping_cache"])
         if ctx["mode"] in ON_DEMAND or ctx["raw"].get("blocked"):
             return {}  # on-demand answers and stopped runs never change the saved profile
         prof, items, prior = ctx["prof"], ctx["items"], ctx["prior"]
@@ -290,7 +333,6 @@ def make_graph(deps: Deps):
             profile["framework"] = prof.get("framework_cache") or prior.get("framework")
         if prof.get("mapping_cache") or prior.get("mapping"):
             profile["mapping"] = prof.get("mapping_cache") or prior.get("mapping")
-        store = ctx["store"]
         memory = await store.adump(profile) if hasattr(store, "adump") else store.dump(profile)
         # memory is written only here, after the work above succeeded
         return {"memory": memory}
