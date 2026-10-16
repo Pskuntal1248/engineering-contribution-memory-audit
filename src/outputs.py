@@ -19,6 +19,25 @@ _TRIVIAL = TRIVIAL_TITLE
 _PLACEHOLDER = re.compile(r"\bnot stated\b|model summary needed|\(unlinked\)", re.I)
 
 
+_PROBLEM_WORDS = re.compile(r'\b(fix(?:es|ed)?|bug|race|hotfix|mismatch(?:ing|es)?|regression|duplicat(?:e|ed|es)|dropped|failed|timed[- ]out|did not match|could not|locked out)\b', re.I)
+_UNRESOLVED = re.compile(r"\b(unresolved|not (?:yet )?(?:fixed|resolved|addressed)|remains|still open|future work|known (?:bug|issue)|won'?t fix|to be fixed)\b", re.I)
+
+
+def problem_evidence(i: Item) -> bool:
+    """A problem the item RESOLVED: problem language in a sentence that does not itself say the problem is still open."""
+    text = i.title + ' ' + i.text
+    return any(_PROBLEM_WORDS.search(s) and not _UNRESOLVED.search(s) for s in re.split(r'(?<=[.!?])\s+', text))
+
+
+def problem_summary(i: Item) -> str:
+    sentences = re.split(r'(?<=[.!?])\s+', i.text.strip())
+    problem = next((s for s in sentences if problem_evidence(Item(id='p', source=i.source, type=i.type, date=i.date, title='', text=s))), '')
+    problem = re.sub(r'^\s*[A-Z][A-Z0-9]+-\d+\s*:\s*', '', problem)
+    action = next((s for s in sentences if re.match(r'\s*(Adds?|Fix(?:es|ed)?|Introduc(?:es|ed)|Implement(?:s|ed)|Restore(?:s|d))\b', s, re.I) and s != problem), '')
+    body = ('Source describes: ' + problem + (' ' + action if action else '')) if problem else 'I fixed ' + i.title + '.'
+    return clip(body, 420) + f' Shipped on {day(i)}.'
+
+
 _DANGLING = {"a", "an", "the", "of", "to", "and", "or", "for", "with", "in", "on", "by", "at", "from", "how", "is", "are", "i", "we"}
 
 
@@ -503,10 +522,10 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
         return {"heading": heading, "bullets": bullets} if bullets else {"heading": heading, "body": none}
     if kind in {"backfill", "profile"}:
         mine_ = [i for i in items if i.meta.get("mine")]
-        fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and re.search(r"\b(fix|fixes|fixed|bug|race|hotfix|mismatch|regression)\b", i.title, re.I)
+        fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and problem_evidence(i)
                  and (shipped(i) if i.type == "pr" else str(i.meta.get("status", "")).lower() in {"done", "closed", "resolved"})]
         slack_fixes = [v for v in profile["invisible"] if v["label"] == "problem_solved"]
-        solved = [block(short(i.title, 80), f"I fixed this and it shipped on {day(i)}.", items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
+        solved = [block(short(i.title, 80), problem_summary(i), items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
         def _thread_block(v: dict[str, Any]) -> str:
             it = by_id[v["evidence"][0]]
             co = [c for c in v.get("co_contributors", []) if not _SLACK_ID.fullmatch(c)][:2]
