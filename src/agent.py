@@ -16,7 +16,7 @@ from langgraph.graph import END, StateGraph
 
 import eprofile
 import outputs
-from guards import MODE_LIMITS, Budget, ToolLog, budget_for, internal_terms, parse_channels
+from guards import MODE_LIMITS, Budget, ToolLog, budget_for, internal_terms, parse_channels, self_aliases
 from models import Item, day, local_date_of, local_tz
 from pipeline import Config, ingest
 from sources import GatewaySource, Source
@@ -208,7 +208,6 @@ def make_graph(deps: Deps):
         ctx, inp = _thaw(state["ctx"]), state["inputs"]
         cfg = ctx["cfg"]
         mode, prior = ctx["mode"], ctx["prior"]
-        names = {n for n in cfg.name_hints if n}
         budget = budget_for("backfill" if mode == "backfill" else "weekly" if mode == "weekly" else "on_demand")
         budget.started = ctx.get("started", budget.started)  # the spec's time limit covers the whole run, source reads included
         old = [eprofile.expand(r) for r in prior.get("items", [])]
@@ -246,6 +245,7 @@ def make_graph(deps: Deps):
         for it_ in items:  # calendar days are shown in the user's timezone; the stored time stays UTC (ordering, cursors)
             it_.meta["local_date"] = local_date_of(it_.date, tz)
         ctx["items"], ctx["new_ids"], ctx["failed"] = items, new_ids, failed
+        names = self_aliases(items, cfg.username, {n for n in cfg.name_hints if n})
         prof = await eprofile.build(items, username=cfg.username, names=names, llm=deps.llm, budget=budget,
                                     framework=str(inp.get("review_framework", "") or ""), role_and_level=str(inp.get("role_and_level", "")),
                                     prior=prior, repo_aliases=cfg.repo_aliases, embedder=deps.embedder,
@@ -271,7 +271,7 @@ def make_graph(deps: Deps):
             ctx["corpus"], ctx["result"] = corpus, result
             return {"ctx": _freeze(ctx), "corpus": corpus, "result": result}
         items, prof, mode = ctx["items"], ctx["prof"], ctx["mode"]
-        names = {n for n in cfg.name_hints if n}
+        names = self_aliases(items, cfg.username, {n for n in cfg.name_hints if n})
         colleagues = sorted({a for i in items for a in [i.author, *i.co_authors, *(i.meta.get("participants") or [])] if a and a not in names and a.lower() != cfg.username.lower()})
         terms = internal_terms(items, [t for t in str(inp.get("redact_terms", "")).replace("\n", ",").split(",")], cfg.repos[0].split("/")[0] if cfg.repos else "", cfg.jira_site)
         window = ctx["new_ids"]
