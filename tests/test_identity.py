@@ -40,7 +40,7 @@ def test_blank_and_unresolvable_fails_clearly():
         run({**INP, "github_username": ""}, None)
 
 
-def test_blank_jira_site_comes_from_account_and_failure_is_clear():
+def test_blank_jira_site_comes_from_account_and_a_missing_jira_never_stops_the_run():
     async def site():
         return "https://acme.atlassian.net/"
     out = run({**INP, "jira_site": ""}, None, site=site)
@@ -48,6 +48,11 @@ def test_blank_jira_site_comes_from_account_and_failure_is_clear():
 
     async def nosite():
         return ""
-    with pytest.raises(RuntimeError, match="Could not read the Jira site"):
-        run({**INP, "jira_site": ""}, None, site=nosite)
+    out2 = run({**INP, "jira_site": ""}, None, site=nosite)  # Jira is optional: no site is a note, never a stopped run
+    assert out2["result"]["status"] == "completed"
+    assert any("Jira site could not be read" in n for n in out2["result"]["notes"] + out2["result"]["unavailable_reasons"].__repr__().split("\n"))
+
+    async def broken():
+        raise RuntimeError("jira.get_server_info: not connected")
+    assert run({**INP, "jira_site": ""}, None, site=broken)["result"]["status"] == "completed"
 

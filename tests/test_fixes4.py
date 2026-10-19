@@ -44,16 +44,16 @@ def test_unknown_channel_lists_visible_channels_and_suggests():
     assert "Did you mean: #payments-eng?" in err
     assert "#random" in err  # the visible list is shown so the user can choose
     assert out["slack"]["threads"] == []
-    assert [n for n, _ in gw.calls] == ["slack.list_channels"]  # one bad input: nothing else was called at all
+    assert [n for n, _ in gw.calls] == ["slack.list_channels"]  # no channel was verified, so no Slack read happened
 
 
-def test_mixed_valid_and_unknown_channels_reads_nothing():
-    # one bad channel name stops the whole read - the good channel is not read either
+def test_mixed_valid_and_unknown_channels_reads_the_valid_one_and_reports_the_other():
+    # a bad channel name is reported; the good channel is still read and nothing is blocked
     gw = Gateway()
     out = asyncio.run(GatewaySource(gw, ME, [], parse_channels("payments-eng,payments-engr"), False, [], HAS).fetch(SINCE, None, ToolLog()))
-    assert out["slack"]["threads"] == []
-    assert [n for n, _ in gw.calls] == ["slack.list_channels"]
-    assert any(f["source"] == "preflight" and "no contribution data was read at all" in f["error"] for f in out["failed"])
+    assert out["slack"]["threads"] and not out.get("blocked")
+    assert any(f["source"] == "slack:#payments-engr" for f in out["failed"])
+    assert not any(f["source"] == "preflight" for f in out["failed"])
 
 
 def test_channel_id_accepted_end_to_end():
@@ -83,16 +83,14 @@ def test_jira_preflight_canonicalises_case():
     assert [t["key"] for t in out["jira"]] == ["PAY-1", "PAY-2", "PAY-3"]
 
 
-def test_jira_mixed_valid_and_invalid_keys_reads_nothing():
-    # one wrong key stops the whole Jira read - the valid key is not read either
+def test_jira_mixed_valid_and_invalid_keys_reads_the_valid_key_and_reports_the_other():
     gw = JiraProjects()
     out = run_jira(gw, ["pay", "PAY2"], HAS | {"jira.get_all_projects"})
-    assert out["jira"] == []
-    assert not any(n == "jira.search_issues" for n, _ in gw.calls)
+    assert [t["key"] for t in out["jira"]] == ["PAY-1", "PAY-2", "PAY-3"] and not out.get("blocked")
     err = next(f["error"] for f in out["failed"] if f["source"] == "jira:PAY2")
     assert "not visible" in err and "Did you mean: PAY?" in err and "SRCH" in err
-    assert any(f["source"] == "preflight" and "no contribution data was read at all" in f["error"] for f in out["failed"])
-    assert not any(n == "slack.search_messages" for n, _ in gw.calls)  # the valid Slack input is not read either
+    assert not any(f["source"] == "preflight" for f in out["failed"])
+    assert any(n == "slack.search_messages" for n, _ in gw.calls)  # the valid Slack input is still read
 
 
 class JiraProjectsRefused(Gateway):
@@ -102,24 +100,24 @@ class JiraProjectsRefused(Gateway):
         return await super().__call__(name, args)
 
 
-def test_jira_preflight_refused_blocks_the_read():
-    # an auth refusal means the keys are unverified, not safe: nothing is read
+def test_jira_preflight_refused_skips_jira_and_reads_the_rest():
+    # an auth refusal means Jira is skipped and named in the failures; it never stops Slack or GitHub
     gw = JiraProjectsRefused()
     out = run_jira(gw, ["PAY"], HAS | {"jira.get_all_projects"})
-    assert out["jira"] == []
+    assert out["jira"] == [] and not out.get("blocked")
     assert not any(n == "jira.search_issues" for n, _ in gw.calls)
-    err = next(f["error"] for f in out["failed"] if f["source"] == "jira-preflight")
-    assert "could not be verified" in err
-    assert not any(n == "slack.search_messages" for n, _ in gw.calls)  # refused Jira validation blocks Slack too
+    err = next(f["error"] for f in out["failed"] if f["source"] == "jira")
+    assert "Jira is not connected" in err and "skipped" in err
+    assert any(n == "slack.search_messages" for n, _ in gw.calls)
 
 
-def test_jira_preflight_tool_missing_blocks_the_read():
+def test_jira_preflight_tool_missing_skips_jira():
     gw = Gateway()  # the base gateway never answers jira.get_all_projects
     out = run_jira(gw, ["PAY"], HAS - {"jira.get_all_projects"})
     assert out["jira"] == []
     assert not any(n == "jira.search_issues" for n, _ in gw.calls)
-    assert any(f["source"] == "jira-preflight" and "not available" in f["error"] for f in out["failed"])
-    assert not any(n == "slack.search_messages" for n, _ in gw.calls)
+    assert any(f["source"] == "jira" and "not available" in f["error"] for f in out["failed"])
+    assert any(n == "slack.search_messages" for n, _ in gw.calls)
 
 
 # ------------------------------------------ the barrier is global: one bad input, zero contribution reads anywhere
@@ -128,20 +126,20 @@ DOCS = ["confluence", "notion", "google drive"]
 DISCOVERY = {"slack.list_channels", "jira.get_all_projects"}  # the only calls a blocked run may make
 
 
-def test_invalid_slack_blocks_github_jira_and_docs():
+def test_invalid_slack_does_not_block_github_jira_or_docs():
     gw = JiraProjects()
     out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("payments-engr"), False, ["PAY"], HAS | {"jira.get_all_projects"}, DOCS, ["Parth Singh"]).fetch(SINCE, None, ToolLog()))
-    assert {n for n, _ in gw.calls} <= DISCOVERY
-    assert out["github"] == {"prs": [], "reviews": {}, "commits": []} and out["jira"] == [] and out["docs"] == [] and out["slack"]["threads"] == []
-    assert any(f["source"] == "preflight" for f in out["failed"])
+    assert not out.get("blocked") and out["jira"]
+    assert any(f["source"] == "slack:#payments-engr" for f in out["failed"])
+    assert any(n.startswith("github.") for n, _ in gw.calls)  # GitHub was read
 
 
-def test_refused_jira_blocks_github_slack_and_docs():
+def test_refused_jira_does_not_block_github_or_slack():
     gw = JiraProjectsRefused()
     out = asyncio.run(GatewaySource(gw, ME, ["o/r"], parse_channels("#payments-eng"), False, ["PAY"], HAS | {"jira.get_all_projects"}, DOCS, ["Parth Singh"]).fetch(SINCE, None, ToolLog()))
-    assert {n for n, _ in gw.calls} <= DISCOVERY  # the valid Slack channels and repos are not read either
-    assert out["github"] == {"prs": [], "reviews": {}, "commits": []} and out["docs"] == [] and out["slack"]["threads"] == []
-    assert any(f["source"] == "preflight" for f in out["failed"])
+    assert not out.get("blocked") and out["slack"]["threads"]
+    assert any(f["source"] == "jira" and "not connected" in f["error"] for f in out["failed"])
+    assert any(n.startswith("github.") for n, _ in gw.calls)
 
 
 # ------------------------------------------ a blocked run saves nothing and says it was stopped
@@ -164,7 +162,7 @@ def test_blocked_first_run_saves_nothing_and_reports_blocked():
     store = InMemoryStore()
     gw = JiraProjects()
     g = agent.make_graph(blocked_deps(gw, store))
-    bad = dict(INP, slack_channels="payments-engr")
+    bad = dict(INP, repos_or_org="nobody")  # GitHub is the core source: only it can stop a run
     out = asyncio.run(g.ainvoke({"inputs": bad, "memory": {}}))
     assert out["result"]["status"] == "blocked" and out["result"]["model_calls"] == 0
     assert "Run stopped" in out["corpus"]["title"]
@@ -186,7 +184,7 @@ def test_blocked_weekly_run_leaves_the_saved_profile_untouched():
     assert out["result"]["status"] == "completed"
     mem = out["memory"]
     keys_before = {i.key: i.value for i in asyncio.run(store.asearch(("uc10", "profile"), limit=100))}
-    bad = dict(INP, slack_channels="payments-engr")
+    bad = dict(INP, repos_or_org="nobody")  # GitHub is the core source: only it can stop a run
     out2 = asyncio.run(agent.make_graph(blocked_deps(JiraProjects(), store)).ainvoke({"inputs": bad, "memory": mem}))
     assert out2["result"]["status"] == "blocked" and out2["memory"] == mem  # saved memory passes through untouched
     keys_after = {i.key: i.value for i in asyncio.run(store.asearch(("uc10", "profile"), limit=100))}

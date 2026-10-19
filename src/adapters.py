@@ -94,7 +94,7 @@ def explain(source: str, err: str) -> str:
     if "scope" in e and any(k in e for k in ("401", "403", "unauthor", "forbidden")):
         return f"{name} is connected but its permission scope does not match; reconnect with: gravity connect {source.split(':')[-1].lower()}"
     if any(k in e for k in ("needs_reconnect", "reconnect", "unauthor", "401", "403", "forbidden", "not connected", "no connection", "no account")):
-        return f"{name} is not connected, or the connection needs renewing: run gravity connect for it (tool said: {tm})"
+        return f"{name} is not connected to your account, or the connection needs renewing (tool said: {tm})"
     if "404" in e or "not found" in e:
         return f"{name} was not found at that site (tool said: {tm})"
     return f"{name} could not be read: {tm}"
@@ -187,7 +187,7 @@ async def fetch_jira(call: Call, projects: list[str], since: str, log: ToolLog, 
             if not token or len(found) >= MAX_TICKETS or find_key(data, "isLast") is True:
                 break
     except Exception as e:  # noqa: BLE001
-        out["failed"].append({"source": "jira", "error": err_text(e, 200)})
+        out["failed"].append({"source": "jira", "error": explain("jira", err_text(e, 200))})
         if not found:
             return
     if len(found) >= MAX_TICKETS:

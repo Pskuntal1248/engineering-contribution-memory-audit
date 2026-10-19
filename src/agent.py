@@ -167,8 +167,8 @@ def make_graph(deps: Deps):
             if base.startswith("https://"):
                 inp["jira_site"] = base.rstrip("/")
                 id_notes.append(f"Jira site taken from the connected Jira account: {inp['jira_site']}")
-            else:
-                raise RuntimeError("Could not read the Jira site from the connected Jira account. Connect Jira, or type the Jira site URL and run again.")
+            elif str(inp.get("jira_projects") or "").strip():  # Jira is optional: it is only a problem when the user asked for it
+                id_notes.append("Jira: the Jira site could not be read from a connected Jira account, so Jira is skipped. Connect Jira or type the site URL to include it")
         store = _profile_store(mem)
         prior = await store.aload() if hasattr(store, "aload") else store.load()
         req = str(inp.get("request") or "auto")

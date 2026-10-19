@@ -263,6 +263,16 @@ def project_name(ev: list[Item]) -> str:
     return f"{label} ({key})" if label and key else label or key
 
 
+_ROLE_ORDER = ("supported", "reviewed", "contributed", "built", "led")
+
+
+def _higher_role(model_role: str, rule_role: str) -> str:
+    """The model may word the card but must not lower what the code proved: PRs the user authored in the project make the rule role 'built',
+    and a model answer of 'contributed' for the same evidence used to hide that."""
+    rank = {r: n for n, r in enumerate(_ROLE_ORDER)}
+    return model_role if rank.get(model_role, 0) >= rank.get(rule_role, 0) else rule_role
+
+
 def baseline_project_card(pid: str, ids: list[str], by_id: dict[str, Item], username: str) -> dict[str, Any]:
     ev = [by_id[i] for i in ids]
     tickets = [e for e in ev if e.type == "ticket"]
@@ -395,5 +405,5 @@ async def project_cards_with_model(llm: LLM | None, budget: Budget, base: list[d
                 continue
             ev = [e for e in c.evidence if e in by_id] or out[c.project_id]["evidence"]
             src_text = " ".join(by_id[e].text + " " + by_id[e].title for e in ev).lower()
-            out[c.project_id].update(name=clip(c.name, 80), goal=_supported(_grounded(first_person(clip(c.goal, 240)), src_text), src_text) or out[c.project_id]["goal"], outcome=_supported(_grounded(first_person(clip(c.outcome, 240)), src_text), src_text) or out[c.project_id]["outcome"], role=cap_role(c.role, [by_id[e] for e in ev], username))
+            out[c.project_id].update(name=clip(c.name, 80), goal=_supported(_grounded(first_person(clip(c.goal, 240)), src_text), src_text) or out[c.project_id]["goal"], outcome=_supported(_grounded(first_person(clip(c.outcome, 240)), src_text), src_text) or out[c.project_id]["outcome"], role=_higher_role(cap_role(c.role, [by_id[e] for e in ev], username), out[c.project_id]["role"]))
     return list(out.values()), notes

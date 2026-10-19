@@ -24,12 +24,12 @@ inputs:
     required: true
   - name: jira_projects
     type: textarea
-    label: "Jira project keys, comma separated"
-    required: true
+    label: "Jira project keys, comma separated (optional: Jira is skipped when blank or not connected)"
+    required: false
   - name: slack_channels
     type: textarea
-    label: "Slack channels to read (public or ones you opt in), comma separated"
-    required: true
+    label: "Slack channels to read (optional: public or ones you opt in, comma separated)"
+    required: false
   - name: role_and_level
     type: text
     label: "Your role and level (e.g. Software Engineer II, Payments)"

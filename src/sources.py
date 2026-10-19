@@ -111,10 +111,14 @@ class GatewaySource:
             return out
 
         async def slack_part() -> None:
-            if self.slack_channels or self.include_dms:  # no Slack call at all unless the user named channels
+            if (self.slack_channels or self.include_dms) and picked:  # no Slack call at all unless the user named channels and some were verified
                 await self._slack(out, since, log, picked)
 
         async def jira_part() -> None:
+            if not projects:
+                if not self.jira_projects:
+                    out.setdefault("info", []).append("Not covered: Jira (no project keys given)")
+                return  # keys that were given but not usable were already reported by the preflight
             if "jira.search_issues" in self.has:
                 await adapters.fetch_jira(self.call, projects, since, log, out)
             else:
@@ -140,7 +144,9 @@ class GatewaySource:
             out["capped"].append(f"time limit: stopped reading sources early, {self.skipped} detail reads (PR files, reviews, ticket history, Slack threads, pages) were not done; "
                                  "the items found by the list reads are still included. Narrow backfill_months or run again to cover the rest")
         if not self.docs_sources:
-            out["failed"].append({"source": "docs", "error": "no docs source chosen (set docs_source to Confluence, Notion or Google Drive)"})
+            out.setdefault("info", []).append("Not covered: docs (no docs source chosen)")
+        if not (self.slack_channels or self.include_dms):
+            out.setdefault("info", []).append("Not covered: Slack (no channels given)")
         return out
 
     async def _preflight(self, out: dict, log: ToolLog) -> tuple[list[dict], list[dict], list[str], bool]:
@@ -161,8 +167,7 @@ class GatewaySource:
                 chans = await self._list_channels(log)
                 out["slack"]["channels"] = chans
             except Exception as e:  # noqa: BLE001 - the channel list itself is unreadable: every channel input is unverified
-                out["failed"].append({"source": "slack", "error": "the channel list could not be read, so the configured channels could not be verified: " + err_text(e, 200)})
-                ok = False
+                out["failed"].append({"source": "slack", "error": adapters.explain("slack", err_text(e, 200)) + " Slack was skipped; the other sources were still read."})
             else:
                 picked, missing = channels_to_read(chans, self.slack_channels, self.include_dms, log)
                 visible = sorted(str(c.get("name", "")) for c in chans if not is_dm_channel(c) and c.get("name"))
@@ -178,23 +183,21 @@ class GatewaySource:
                         + f"Channels it can see: {shown}. "
                         "Rerun with the exact name or the channel ID. A private channel is only listed when the connected account is a member; "
                         "if the connection is older than the private channel, reconnect it so private channels are readable.")})
-                for ch in picked:
+                for ch in list(picked):
                     if ch.get("is_member") is False:
-                        missing.append(str(ch.get("name", "")))
+                        picked.remove(ch)
                         out["failed"].append({"source": f"slack:#{ch.get('name', '')}", "error": "connected Slack account is not a member of this channel; join it, then rerun"})
-                if missing:
-                    ok = False
         if self.jira_projects:
             if "jira.get_all_projects" not in self.has:
-                out["failed"].append({"source": "jira-preflight", "error": "the configured project keys could not be verified (jira.get_all_projects is not available in this run). Fix the tool declaration or the connection and rerun."})
-                ok = False
+                out["failed"].append({"source": "jira", "error": "Jira could not be read (jira.get_all_projects is not available in this run), so it was skipped; the other sources were still read."})
+                projects = []
             else:
                 try:
                     log.add("jira.get_all_projects")
                     seen = adapters.rows(await self.call("jira.get_all_projects", {"max_results": 200}), "values", "projects", "results")
                 except Exception as e:  # noqa: BLE001 - an auth refusal means the keys are unverified, not safe
-                    out["failed"].append({"source": "jira-preflight", "error": "the configured project keys could not be verified: " + err_text(e, 120)})
-                    ok = False
+                    out["failed"].append({"source": "jira", "error": adapters.explain("jira", err_text(e, 120)) + " Jira was skipped; the other sources were still read."})
+                    projects = []
                 else:
                     canon = {str(p.get("key", "")).upper(): str(p.get("key", "")) for p in seen if p.get("key")}
                     canon = {k: v for k, v in canon.items() if k}
@@ -204,7 +207,6 @@ class GatewaySource:
                         if hit:
                             checked.append(hit)
                         else:
-                            ok = False
                             close = difflib.get_close_matches(str(proj).upper(), sorted(canon), n=3, cutoff=0.6)
                             out["failed"].append({"source": f"jira:{proj}", "error": (
                                 f"project {proj} is not visible to the connected Jira account. "

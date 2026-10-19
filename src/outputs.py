@@ -12,6 +12,7 @@ from metrics import shipped
 from models import Item, day
 
 LEDGER_CAP = 6000
+ROW_CAP_IN_RESULT = 300  # the result object carries the newest rows; the CSV download carries all of them
 
 
 _SLACK_ID = re.compile(r"\b[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,11}\b")
@@ -514,6 +515,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                   "body": f"{len(rows)} items" + (f" (newest {LEDGER_CAP} of {len(items)})" if trunc else "") + ". Reverts and reverted PRs are listed but not counted as shipped.",
                   "table": {"columns": ledger.COLUMNS, "rows": rows}}
     sections: list[dict[str, Any]] = []
+    problems_rows: list[dict[str, Any]] = []
     sts = build_statements(profile, by_id, kind if kind not in {"backfill", "weekly"} else "profile", names, colleagues, date_from, date_to)
     if kind == "weekly_summary" or kind == "weekly":
         sections[0:0] = weekly_sections(profile, by_id, new_ids, quiet_line, window_label)
@@ -526,6 +528,9 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                  and (shipped(i) if i.type == "pr" else str(i.meta.get("status", "")).lower() in {"done", "closed", "resolved"})]
         slack_fixes = [v for v in profile["invisible"] if v["label"] == "problem_solved"]
         solved = [block(short(i.title, 80), problem_summary(i), items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
+        problems_rows = [{"title": short(i.title, 80), "summary": problem_summary(i), "date": day(i), "type": i.type, "link": _link(i)} for i in sorted(fixes, key=lambda x: x.date)[:8]]
+        problems_rows += [{"title": by_id[v["evidence"][0]].title, "summary": re.sub(r"\s+", " ", v["summary"]).strip(), "date": day(by_id[v["evidence"][0]]), "type": "thread", "link": _link(by_id[v["evidence"][0]])}
+                          for v in slack_fixes if v["evidence"] and v["evidence"][0] in by_id]
         def _thread_block(v: dict[str, Any]) -> str:
             it = by_id[v["evidence"][0]]
             co = [c for c in v.get("co_contributors", []) if not _SLACK_ID.fullmatch(c)][:2]
@@ -626,6 +631,19 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
               "evidence_gaps": [{"expectation": g["expectation"], "status": g["status"]} for g in profile["gaps"]],
               "unavailable": list(dict.fromkeys(f["source"] for f in failed)),
               "unavailable_reasons": list({f["source"]: f.get("error", "") for f in failed}.items()), "notes": run_notes, "analysis_status": "degraded" if FALLBACK in limit_notes else "not_flagged", "ledger_rows": len(rows)}
+    # Structured copies of what the page shows, as flat lists of objects, so the result page can lay them out (it can only show what is in the result object).
+    def _first_link(ids: list[str]) -> str:
+        return next((_link(by_id[e]) for e in ids if e in by_id and by_id[e].url), "")
+    if kind in {"backfill", "profile"}:
+        result["project_list"] = [{"name": p["name"], "role": p["role"], "first": p["first"], "last": p["last"], "goal": "" if _PLACEHOLDER.search(p["goal"]) else p["goal"],
+                                  "outcome": "" if _PLACEHOLDER.search(p["outcome"]) else p["outcome"], "co_contributors": ", ".join(p.get("co_contributors") or []), "items": len(p["evidence"]), "link": _first_link(p["evidence"])} for p in profile["projects"]]
+        result["problems_solved"] = problems_rows
+        result["invisible_work_list"] = [{"label": v["label"], "summary": re.sub(r"\s+", " ", v["summary"]).strip(), "date": day(by_id[v["evidence"][0]]) if v["evidence"] and v["evidence"][0] in by_id else "", "link": _first_link(v["evidence"])}
+                                         for v in profile["invisible"] if v["label"] != "problem_solved"]
+        result["skills"] = [{"skill": k["skill"], "pieces_of_work": k["count"], "link": _first_link(k["evidence"])} for k in profile["skills"]]
+        result["decision_list"] = [{"title": d["title"], "role": d["role"], "summary": d["summary"] if not _PLACEHOLDER.search(d["summary"]) else "", "link": _first_link(d["evidence"])} for d in profile["decisions"]]
+    result["ledger"] = [dict(zip(ledger.COLUMNS, [str(c) for c in r])) for r in rows[:ROW_CAP_IN_RESULT]]
+    result["ledger_rows_shown"] = min(len(rows), ROW_CAP_IN_RESULT)
     return corpus, result
 
 

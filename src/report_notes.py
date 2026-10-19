@@ -19,7 +19,7 @@ def split_notes(notes: list[str]) -> tuple[list[str], list[str], list[str]]:
             failures.append(FALLBACK)
         elif low.startswith("no review framework given"):
             skipped.append("no review framework given: evidence gaps skipped; a framework would enable them")
-        elif low.startswith(("github username taken", "jira site taken", "embeddings not re-run", "topic grouping used", "review framework: ", "timezone was not given", "model not used", "project names and goals from rules")) and "failed" not in low and "not run" not in low:
+        elif low.startswith(("not covered:", "github username taken", "jira site taken", "embeddings not re-run", "topic grouping used", "review framework: ", "timezone was not given", "model not used", "project names and goals from rules")) and "failed" not in low and "not run" not in low:
             info.append(note)
         elif low.startswith("capped: notion: single"):
             continue
