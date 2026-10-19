@@ -83,7 +83,7 @@ def test_skills_need_real_evidence():
     prof = profile(WORK + FOUR)
     by = {s["skill"]: s["evidence"] for s in prof["skills"]}
     assert not any("pull/4" in e or e.endswith("#4") for e in by.get("debugging & incident response", []) if "gh:pr" in e)
-    assert f"gh:pr:{R}#6" not in by.get("frontend & accessibility", [])
+    assert f"gh:pr:{R}#6" not in by.get("frontend", []) + by.get("accessibility", [])
 
 
 def test_profile_page_has_all_seven_sections_even_when_empty_and_the_ledger_is_last():
