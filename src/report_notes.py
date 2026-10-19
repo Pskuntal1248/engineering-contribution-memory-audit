@@ -7,8 +7,14 @@ FALLBACK = "Some analysis could not be completed. This output uses saved evidenc
 
 def split_notes(notes: list[str]) -> tuple[list[str], list[str], list[str]]:
     info, skipped, failures = [], [], []
+    seen_cov: set[str] = set()
     for note in notes:
         low = note.lower()
+        m = re.match(r"not covered:\s*([a-z]+)", low)
+        if m:  # one 'not covered' line per source, whichever step wrote it
+            if m.group(1) in seen_cov:
+                continue
+            seen_cov.add(m.group(1))
         if low.startswith("evidence mapping unavailable"):
             clean = re.sub(r"(?:model call failed|model analysis unavailable|model analysis could not)[^;]*", "analysis unavailable", note, flags=re.I)
             failures.append(clean)
@@ -19,7 +25,7 @@ def split_notes(notes: list[str]) -> tuple[list[str], list[str], list[str]]:
             failures.append(FALLBACK)
         elif low.startswith("no review framework given"):
             skipped.append("no review framework given: evidence gaps skipped; a framework would enable them")
-        elif low.startswith(("not covered:", "github username taken", "jira site taken", "embeddings not re-run", "topic grouping used", "review framework: ", "timezone was not given", "model not used", "project names and goals from rules")) and "failed" not in low and "not run" not in low:
+        elif low.startswith(("not covered:", "window:", "commit matching:", "github username taken", "jira site taken", "embeddings not re-run", "topic grouping used", "review framework: ", "timezone was not given", "model not used", "project names and goals from rules")) and "failed" not in re.sub(r"\b0 failed\b", "", low) and "not run" not in low:
             info.append(note)
         elif low.startswith("capped: notion: single"):
             continue
