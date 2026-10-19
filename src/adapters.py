@@ -243,23 +243,6 @@ def _scope_problem(err: str) -> bool:
     return "scope" in e or "401" in e or "403" in e or "unauthor" in e or "forbidden" in e
 
 
-_PROBES = (("confluence.who_am_i", {}), ("confluence.get_spaces", {"limit": 1}), ("confluence.search_pages", {"limit": 1}), ("confluence.get_pages", {"limit": 1}))
-
-
-async def probe_confluence(call: Call, log: ToolLog) -> str:
-    """When every read path is refused, try one tiny read per other Confluence tool so the message says which ones the connection allows."""
-    res = []
-    for name, args in _PROBES:
-        try:
-            log.add(name)
-            data = await call(name, args)
-            bad = failed_payload(data)
-            res.append(f"{name.split('.')[1]}: " + ("refused" if bad else "ok"))
-        except Exception:  # noqa: BLE001
-            res.append(f"{name.split('.')[1]}: refused")
-    return "Checked what the connection allows: " + ", ".join(res) + "."
-
-
 async def fetch_confluence_v2(call: Call, since: str, log: ToolLog, out: dict, first_error: str, names: list[str] | None = None) -> None:
     """Fallback when the CQL search (Confluence REST v1) is refused for scope: list recent pages metadata-first through the
     v2 pages tool, then open only pages the identity call proves the connected account created or edited. If the identity call
@@ -280,11 +263,11 @@ async def fetch_confluence_v2(call: Call, since: str, log: ToolLog, out: dict, f
         if failed_payload(data):
             raise RuntimeError(failed_payload(data))
     except Exception as e:  # noqa: BLE001
-        out["failed"].append({"source": "docs:confluence", "error": explain("docs:confluence", err_text(e, 400)).rstrip(". ") + ". " + await probe_confluence(call, log)})
+        out["failed"].append({"source": "docs:confluence", "error": explain("docs:confluence", err_text(e, 400)).rstrip(". ")})
         return
     bad = failed_payload(data)
     if bad:
-        out["failed"].append({"source": "docs:confluence", "error": explain("docs:confluence", bad).rstrip(". ") + ". " + await probe_confluence(call, log)})
+        out["failed"].append({"source": "docs:confluence", "error": explain("docs:confluence", bad).rstrip(". ")})
         return
     listed = rows(data, "results")
     if not mine_ids:  # identity refused: without account ids, verifying authorship would mean reading every page body to hunt

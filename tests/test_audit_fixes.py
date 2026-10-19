@@ -79,7 +79,7 @@ def _run(inputs, source=None, memory=None):
 
 def test_skipped_slack_is_said_out_loud():
     notes = " ".join(_run({"slack_channels": ""})["result"]["notes"])
-    assert "Slack was not read" in notes
+    assert "Not covered: Slack" in notes
 
 
 def test_doc_keys_only_from_configured_jira_projects():

@@ -644,6 +644,15 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                                          for v in profile["invisible"] if v["label"] != "problem_solved"]
         result["skills"] = [{"skill": k["skill"], "pieces_of_work": k["count"], "link": _first_link(k["evidence"])} for k in profile["skills"]]
         result["decision_list"] = [{"title": d["title"], "role": d["role"], "summary": d["summary"] if not _PLACEHOLDER.search(d["summary"]) else "", "link": _first_link(d["evidence"])} for d in profile["decisions"]]
+    if weekly_kind:  # the weekly page is about this window only: what is new, as rows the page can lay out
+        win = [i for i in sorted(items, key=lambda x: (x.date, x.id)) if i.id in new_ids]
+        pname_ = {p_["project_id"]: p_["name"] for p_ in profile["projects"]}
+        result["new_work"] = [{"date": day(i), "type": i.type, "title": short(i.title, 90), "project": pname_.get(profile["project_of"].get(i.id, ""), ""), "counted": ledger.counted_label(i), "link": _link(i)}
+                              for i in win if i.type != "review"][:ROW_CAP_IN_RESULT]
+        result["new_reviews"] = sum(1 for i in win if i.type == "review")
+        result["new_invisible_work"] = [{"label": v["label"], "summary": re.sub(r"\s+", " ", v["summary"]).strip(), "date": day(by_id[v["evidence"][0]]) if v["evidence"] and v["evidence"][0] in by_id else "", "link": _first_link(v["evidence"])}
+                                        for v in profile["invisible"] if any(e in new_ids for e in v["evidence"])]
+        result["new_decisions"] = [{"title": d["title"], "role": d["role"], "link": _first_link(d["evidence"])} for d in profile["decisions"] if any(e in new_ids for e in d["evidence"])]
     result["coverage"] = dict(coverage_status or {})
     result["ledger"] = [dict(zip(ledger.COLUMNS, [str(c) for c in r])) for r in rows[:ROW_CAP_IN_RESULT]]
     result["ledger_rows_shown"] = min(len(rows), ROW_CAP_IN_RESULT)

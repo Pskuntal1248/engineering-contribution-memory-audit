@@ -222,3 +222,16 @@ def test_a_slack_that_is_not_connected_is_not_reported_as_channels_not_found():
     out = asyncio.run(agent.make_graph(deps).ainvoke({"inputs": {**GH_INP, "slack_channels": "#payments-eng"}, "memory": {}}))
     assert out["result"]["unavailable"].count("slack") == 1 and not any(u.startswith("slack:#") for u in out["result"]["unavailable"])
     assert out["result"]["coverage"]["slack"] == "not connected" and "Slack not connected" in out["corpus"]["summary"]
+
+
+def test_weekly_result_lists_this_weeks_new_work_as_rows():
+    a = _run(GH_INP, {}, 176, 176)
+    b = _run(GH_INP, a["memory"], 183, 183)
+    r = b["result"]
+    assert r["mode"] == "weekly" and "project_list" not in r  # the profile lists belong to the profile page
+    assert r["new_work"] and all(set(x) == {"date", "type", "title", "project", "counted", "link"} for x in r["new_work"])
+    assert len(r["new_work"]) + r["new_reviews"] == r["new_items"]
+    assert all(x["link"].startswith("http") for x in r["new_work"])
+    assert isinstance(r["new_invisible_work"], list) and isinstance(r["new_decisions"], list)
+    quiet = _run(GH_INP, _run(GH_INP, b["memory"], 190)["memory"], 197)["result"]
+    assert quiet["new_items"] == 0 and quiet["new_work"] == []

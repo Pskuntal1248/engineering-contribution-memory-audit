@@ -176,7 +176,7 @@ def make_graph(deps: Deps):
         if req == "weekly_update":
             req = "auto"  # the dropdown default: the first run backfills, every later run is the weekly update (new items only)
         if not [c for c in parse_channels(str(inp.get("slack_channels") or ""))] and str(inp.get("include_dms") or "No").strip().lower() != "yes":
-            id_notes.append("no Slack channels were listed, so Slack was not read")
+            id_notes.append("Not covered: Slack (no channels were listed)")
         elif "*dm*" in str(inp.get("slack_channels") or "").lower() and str(inp.get("include_dms") or "No").strip().lower() != "yes":
             id_notes.append("*dm* was listed but include_dms is No, so no DM was read")
         has_memory = bool(prior.get("items") or prior.get("last_run"))  # an empty but completed run still counts
