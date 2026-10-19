@@ -28,7 +28,7 @@ def outputs_id(n: str) -> bool:
 def compact(it: Item, project: str) -> dict[str, Any]:
     m = it.meta
     from interview import authored_text, proposed
-    keep = {k: m[k] for k in ("mine", "confidential", "repo", "number", "merged_flag", "reverted", "is_revert", "received", "reopen_count", "status", "channel", "merged_ids", "state", "my_messages", "generated_only", "docs_only", "cycle_hours", "participants", "paths") if k in m}
+    keep = {k: m[k] for k in ("mine", "confidential", "repo", "number", "merged_flag", "reverted", "is_revert", "received", "reopen_count", "status", "channel", "merged_ids", "state", "my_messages", "generated_only", "docs_only", "cycle_hours", "participants", "paths", "ai_assist") if k in m}
     if it.type in {"doc", "pr"} and analysis._DECISION.search(it.text or ""):
         keep["decision_text"] = True  # the stored text is cut short; remember that the full text had decision wording
     if analysis.is_decision_candidate(it):  # the stored text is cut short, so keep the decision sentence and owner from the full text
@@ -36,6 +36,10 @@ def compact(it: Item, project: str) -> dict[str, Any]:
         keep["owner"] = analysis.decision_owner(it.text)
     if it.type in {"doc", "pr"} and analysis.NEEDS_DECISION.search(it.text or ""):
         keep["needs_decision"] = True
+    if it.type == "commit":
+        fx = analysis.commit_fix(it.title, it.text)  # the stored text is cut short, so keep the problem sentence from the full message
+        if fx:
+            keep["fix_problem"] = fx[0][:300]
     if it.type == "thread":
         keep["interview_action"] = authored_text(it)[:1200]
     if it.type in {"doc", "pr"}:
@@ -205,6 +209,7 @@ async def build(items: list[Item], *, username: str, names: set[str], llm, budge
         prs = [by_id[e] for e in card["evidence"] if by_id[e].type == "pr"]
         self_names = {a.lower() for a in names}
         card["co_contributors"] = [n for n in {p for e in card["evidence"] for p in ([by_id[e].author] + by_id[e].co_authors)} if n and n.lower() not in self_names and not outputs_id(n)][:6]
+        card["ai_assist"] = sorted({a for e in card["evidence"] for a in (by_id[e].meta.get("ai_assist") or [])})[:3]
         if team_changes:  # team change mid-period: the project's items grouped by the team in force, with the change date
             split = linking.split_by_team([by_id[x] for x in clusters[card["project_id"]]["item_ids"]], team_changes)
             since = {t: d for d, t in team_changes}
