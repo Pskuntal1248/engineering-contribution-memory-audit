@@ -15,6 +15,18 @@ from models import Item, Skipped
 TICKET_KEY = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b")
 URL = re.compile(r"https?://[^\s<>\)\]\"']+")
 CO_AUTHOR = re.compile(r"^co-authored-by:\s*(.+?)\s*<([^>]*)>", re.I | re.M)
+_AI_NAME = re.compile(r"\b(claude|copilot|gemini|chatgpt|gpt-?\d|codex|cursor|devin|aider|openai|anthropic)\b", re.I)
+_AI_EMAIL = re.compile(r"@(anthropic\.com|openai\.com|users\.noreply\.github\.com)$|^noreply@(anthropic|openai)\.com$|copilot@|^bot@", re.I)
+
+
+def split_co_authors(text: str) -> tuple[list[str], list[str]]:
+    """Co-author trailers split into (people, AI assistants). An AI assistant is credited as one, never as a human collaborator and never dropped."""
+    people, ai = [], []
+    for name, email in CO_AUTHOR.findall(text or ""):
+        name = name.strip()
+        is_ai = bool(_AI_NAME.search(name) or re.search(r"@(anthropic|openai)\.com\s*$", email.strip(), re.I) or re.match(r"copilot@", email.strip(), re.I))
+        (ai if is_ai else people).append(name)
+    return people, ai
 
 BOT_NAME = re.compile(r"(\[bot\]$|^dependabot|^renovate|^github-actions|^snyk|^codecov|-bot$|^bot-|^slackbot$)", re.I)
 
@@ -167,7 +179,7 @@ def normalize_pr(raw: dict[str, Any], repo: str, username: str, projects: Iterab
     size = pr_size(raw.get("files"), raw.get("additions", 0), raw.get("deletions", 0))
     rev = revert_target(title, body)
     labels = [(l.get("name") if isinstance(l, dict) else str(l)) for l in raw.get("labels", [])]
-    co = [m[0].strip() for m in CO_AUTHOR.findall(body)]
+    co, ai = split_co_authors(body)
     cd = parse_ts(merged or closed)
     cr = parse_ts(created)
     return Item(
@@ -183,6 +195,7 @@ def normalize_pr(raw: dict[str, Any], repo: str, username: str, projects: Iterab
             "generated_only": _generated_only(raw, size, title, body),
             "docs_only": docs_only_pr(raw.get("files"), title),  # lockfile / generated / vendored files only
             "paths": [_fname(f) for f in (raw.get("files") or []) if isinstance(f, dict) and _fname(f)][:15],
+            "ai_assist": ai,
             "merged_basis": raw.get("_merged_basis", "merged_at" if merged else ""),
             "mine": author.lower() == username.lower() or username.lower() in [c.lower() for c in co],
         },
@@ -238,7 +251,7 @@ def normalize_commit(raw: dict[str, Any], repo: str, username: str, projects: It
     when = iso((c.get("author") or {}).get("date") or raw.get("date"))
     if not sha or not when:
         return Skipped(iid, "no sha or date")
-    co = [m[0].strip() for m in CO_AUTHOR.findall(msg)]
+    co, ai = split_co_authors(msg)
     files = raw.get("files")
     size = pr_size(files, (raw.get("stats") or {}).get("additions", 0), (raw.get("stats") or {}).get("deletions", 0))
     first = msg.splitlines()[0] if msg else ""
@@ -247,7 +260,7 @@ def normalize_commit(raw: dict[str, Any], repo: str, username: str, projects: It
     return Item(
         id=iid, source="github", type="commit", date=when, title=first[:200], url=raw.get("html_url", ""),
         text=msg[:2000], author=author, co_authors=co, keys=ticket_keys(msg, projects=projects),
-        meta={"repo": repo, "sha": sha, "size": size, "mine": mine, "paths": paths, "is_revert": first.lower().startswith("revert")},
+        meta={"repo": repo, "sha": sha, "size": size, "mine": mine, "paths": paths, "is_revert": first.lower().startswith("revert"), "ai_assist": ai},
     )
 
 
