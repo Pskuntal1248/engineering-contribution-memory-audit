@@ -222,6 +222,10 @@ def make_graph(deps: Deps):
         failed = list(ctx["raw"].get("failed", []))
         notes += [f"capped: {c}" for c in dict.fromkeys(ctx["raw"].get("capped", []))]
         notes += list(ctx["raw"].get("info", []))
+        if mode == "backfill":
+            notes.append("commit matching: a commit counts as part of one of your PRs when its SHA is in the PR's commit list, it shares a ticket key with the PR, or it touches only files the PR changed during the PR's dates")
+        if mode == "backfill" and ctx.get("since"):
+            notes.append(f"window: work dated since {str(ctx['since'])[:10]} was read ({parse_months(inp.get('backfill_months')) or 6} x 30 days before the run); older work is not in this profile")
         if ctx["raw"].get("blocked"):  # preflight stopped the read: no analysis and no model calls on unverified inputs
             ctx["items"], ctx["new_ids"], ctx["failed"], ctx["notes"], ctx["budget"], ctx["prof"] = [], set(), failed, notes, budget, None
             return {"ctx": _freeze(ctx)}
@@ -405,4 +409,3 @@ async def graph():
         return GatewaySource(call, cfg.username, cfg.repos, cfg.slack_channels, cfg.include_dms, cfg.jira_projects, has, cfg.docs_sources, cfg.name_hints)
 
     return make_graph(Deps(source_factory, llm, embedder=embedder, identity=identity, site=site))
-
