@@ -279,7 +279,7 @@ def baseline_project_card(pid: str, ids: list[str], by_id: dict[str, Item], user
     name = project_name(ev)
     prs = [e for e in ev if e.type == "pr" and e.meta.get("mine")]
     shipped_n = sum(1 for e in prs if shipped(e))
-    role = cap_role("built" if prs else "contributed", ev, username)
+    role = cap_role("built" if any(shipped(e) for e in prs) else "contributed", ev, username)  # built needs a shipped PR the user authored; an open or reverted one is only a contribution
     dates = sorted(day(e) for e in ev)
     return {"project_id": pid, "name": name or pid, "goal": "not stated in the sources (model summary needed)",
             "outcome": _counts_line(shipped_n, sum(1 for t in tickets if t.meta.get("status", "").lower() in {"done", "closed", "resolved"})),

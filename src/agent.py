@@ -23,6 +23,7 @@ from sources import GatewaySource, Source
 from store import NativeMemoryStore, PlatformStore, ProfileStore, platform_store
 from ask import parse_team_changes
 from inputs import backfill_since, parse_months, validate_inputs
+from report_notes import coverage
 from weekly import new_items, next_cursors, quiet_week_line, since_for, id_key
 
 ON_DEMAND = {"weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"}
@@ -197,6 +198,11 @@ def make_graph(deps: Deps):
         start = backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)  # load() already refused a request that cannot be represented
         cursor = (ctx["prior"].get("cursors") or {}).get("github")
         since = since_for(cursor, start) if mode == "weekly" else start
+        if mode == "weekly":  # a PR that was still open at the last run is created before the cursor, so look back far enough to see it merge
+            open_dates = [str(r.get("date") or "") for r in ctx["prior"].get("items", []) if r.get("t") == "pr" and r.get("s") == "github"
+                          and (r.get("m") or {}).get("mine") and not (r.get("m") or {}).get("merged_flag") and (r.get("m") or {}).get("state") != "closed"]
+            if open_dates and min(open_dates)[:10] < since[:10]:
+                since = max(start, f"{min(open_dates)[:10]}T00:00:00Z")
         ctx["since"] = since
         src: Source = deps.source_factory(cfg)
         if hasattr(src, "deadline"):  # detail reads stop early enough to leave the analysis its share of the run's time limit
@@ -225,6 +231,15 @@ def make_graph(deps: Deps):
             fresh, already = new_items(ing.items, seen) if mode == "weekly" else (ing.items, 0)
             new_ids = {i.id for i in fresh}
             have = {i.id for i in old}
+            oldmap = {i.id: i for i in old}
+            merged_now = [i for i in ing.items if mode == "weekly" and i.type == "pr" and i.id in oldmap and not oldmap[i.id].meta.get("merged_flag") and i.meta.get("merged_flag")]
+            for i in merged_now:  # an open PR that merged since the last run is an update to a saved item: it replaces the old row and counts as new this week
+                oldmap_meta = oldmap[i.id].meta
+                i.meta.setdefault("saved_project", oldmap_meta.get("saved_project", ""))
+            fresh = fresh + merged_now
+            new_ids = {i.id for i in fresh}
+            have = {i.id for i in old} - {i.id for i in merged_now}
+            old = [i for i in old if i.id not in {m.id for m in merged_now}]
             items = old + [i for i in fresh if i.id not in have]
             unread = [i for i in ing.items if i.type == "doc" and not i.meta.get("body_read", True)]
             if unread:  # confidentiality can only be judged on what was read
@@ -236,7 +251,7 @@ def make_graph(deps: Deps):
                     why[sk.reason] = why.get(sk.reason, 0) + 1
                 top = sorted(why.items(), key=lambda kv: -kv[1])
                 notes.append(f"Rows not counted ({len(ing.skipped)}): " + "; ".join(f"{r} ({n})" for r, n in top[:12]) + ".")
-            if ing.not_found_channels:
+            if ing.not_found_channels and not any(str(f.get("source", "")) == "slack" for f in failed):  # a Slack that was skipped is reported once; its channels are not "not found"
                 known = {f.get("source") for f in failed}
                 failed += [{"source": f"slack:#{c}", "error": "channel not found"} for c in ing.not_found_channels if f"slack:#{c}" not in known]
         else:
@@ -281,11 +296,17 @@ def make_graph(deps: Deps):
         since = ctx.get("since", "")[:10] or (local_now(inp) - timedelta(days=7)).strftime("%Y-%m-%d")
         window_label = f"dated since {cut} (the last 7 days)" if mode == "weekly_summary" else "new since the last run"
         quiet = quiet_week_line(since, local_now(inp).strftime("%Y-%m-%d")) if mode in {"weekly", "weekly_summary"} and not window else None
+        srcs: dict[str, int] = {}
+        for i in items:
+            srcs[i.source] = srcs.get(i.source, 0) + 1
+        asked = {"github": True, "jira": bool(cfg.jira_projects), "slack": bool(cfg.slack_channels or cfg.include_dms), "docs": bool(cfg.docs_sources)}
+        cov_line, cov_status = coverage(asked, ctx["failed"], srcs, saved_only=mode in ON_DEMAND)
         title = {"backfill": "Engineering profile", "weekly": "Weekly update", "weekly_summary": "Weekly summary", "one_on_one": "1:1 talking points",
                  "review_material": "Review material", "interview_stories": "Interview stories", "evidence_gaps": "Evidence gaps"}[mode]
         corpus, result = outputs.corpus_for(mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
                                             colleagues=colleagues, names=names, date_from=str(inp.get("period_from", "") or ""), date_to=str(inp.get("period_to", "") or ""),
-                                            run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label)
+                                            run_notes=ctx["notes"], failed=ctx["failed"], quiet_line=quiet, new_ids=window, window_label=window_label,
+                                            coverage_line=cov_line, coverage_status=cov_status)
         result["model_diagnostics"] = list(getattr(deps.llm, "diagnostics", []))
         result["status"] = "completed"
         result["model_calls"] = ctx["budget"].calls  # every attempt on the wire: chat (retries included) plus embeddings (retries and failures included)

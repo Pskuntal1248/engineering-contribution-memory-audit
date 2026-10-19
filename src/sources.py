@@ -106,7 +106,8 @@ class GatewaySource:
 
         chans, picked, projects, verified = await self._preflight(out, log)
         if not verified:  # check every named source BEFORE doing any work: one bad input stops the whole read
-            out["failed"].append({"source": "preflight", "error": "one or more configured sources could not be verified, so no contribution data was read at all. Fix the inputs above and rerun."})
+            conn = any("not connected" in str(f.get("error", "")).lower() for f in out["failed"])
+            out["failed"].append({"source": "preflight", "error": "GitHub could not be read, so no contribution data was read at all. " + ("Connect GitHub (see above) and run again." if conn else "Fix the repository input named above and run again.")})
             out["blocked"] = True
             return out
 

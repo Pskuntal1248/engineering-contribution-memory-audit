@@ -12,7 +12,7 @@ from metrics import shipped
 from models import Item, day
 
 LEDGER_CAP = 6000
-ROW_CAP_IN_RESULT = 300  # the result object carries the newest rows; the CSV download carries all of them
+ROW_CAP_IN_RESULT = 100  # the result object carries the newest rows; the CSV download carries all of them
 
 
 _SLACK_ID = re.compile(r"\b[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,11}\b")
@@ -499,7 +499,7 @@ _FRAMEWORK_MSG = {
 
 def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: str, terms: set[str], keep_internal: bool,
                colleagues: list[str], names: set[str], date_from: str, date_to: str, run_notes: list[str],
-               failed: list[dict], quiet_line: str | None, new_ids: set[str], window_label: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
+               failed: list[dict], quiet_line: str | None, new_ids: set[str], window_label: str = "", coverage_line: str = "", coverage_status: dict | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     by_id = {i.id: i for i in items}
     known_keys = {k for i in items if i.type == "ticket" for k in i.keys}
     for d in profile["decisions"]:
@@ -618,6 +618,8 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
         wi = sum(1 for v in profile["invisible"] if any(e in new_ids for e in v["evidence"]))
         wd, wp_, wu = decision_counts([d for d in profile["decisions"] if any(e in new_ids for e in d["evidence"])])
         summary_text = f"{wp} PR{'' if wp == 1 else 's'} shipped, {wi} piece{'' if wi == 1 else 's'} of invisible work, {decision_label(wd, wp_, wu)} in this window. Every item below links to its source."
+    if coverage_line:  # the reader must see what the profile does and does not cover without opening the download
+        summary_text = f"{summary_text} {coverage_line}"
     if kind == "interview_stories" and not keep_internal:  # the page title, summary and the ledger's project and title columns are part of what is shared
         title, summary_text = scrub(title, terms, False, False), scrub(summary_text, terms, False, False)
         for sec in sections:
@@ -642,6 +644,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
                                          for v in profile["invisible"] if v["label"] != "problem_solved"]
         result["skills"] = [{"skill": k["skill"], "pieces_of_work": k["count"], "link": _first_link(k["evidence"])} for k in profile["skills"]]
         result["decision_list"] = [{"title": d["title"], "role": d["role"], "summary": d["summary"] if not _PLACEHOLDER.search(d["summary"]) else "", "link": _first_link(d["evidence"])} for d in profile["decisions"]]
+    result["coverage"] = dict(coverage_status or {})
     result["ledger"] = [dict(zip(ledger.COLUMNS, [str(c) for c in r])) for r in rows[:ROW_CAP_IN_RESULT]]
     result["ledger_rows_shown"] = min(len(rows), ROW_CAP_IN_RESULT)
     return corpus, result

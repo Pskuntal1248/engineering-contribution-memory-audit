@@ -94,7 +94,7 @@ def explain(source: str, err: str) -> str:
     if "scope" in e and any(k in e for k in ("401", "403", "unauthor", "forbidden")):
         return f"{name} is connected but its permission scope does not match; reconnect with: gravity connect {source.split(':')[-1].lower()}"
     if any(k in e for k in ("needs_reconnect", "reconnect", "unauthor", "401", "403", "forbidden", "not connected", "no connection", "no account")):
-        return f"{name} is not connected to your account, or the connection needs renewing (tool said: {tm})"
+        return f"{name} is not connected, or its connection needs renewing. Connect {name} and run again to include it (tool said: {tm})"
     if "404" in e or "not found" in e:
         return f"{name} was not found at that site (tool said: {tm})"
     return f"{name} could not be read: {tm}"
