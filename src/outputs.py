@@ -30,7 +30,44 @@ def problem_evidence(i: Item) -> bool:
     return any(_PROBLEM_WORDS.search(s) and not _UNRESOLVED.search(s) for s in re.split(r'(?<=[.!?])\s+', text))
 
 
+def commit_problem(i: Item) -> str:
+    """The concrete problem a commit's message body says it resolved ('' when it does not show one)."""
+    if i.type != "commit" or i.meta.get("is_revert") or not i.meta.get("mine"):
+        return ""
+    if i.meta.get("fix_problem"):
+        return str(i.meta["fix_problem"])
+    from analysis import commit_fix
+    fx = commit_fix(i.title, i.text)
+    return fx[0] if fx else ""
+
+
+_TESTISH = re.compile(r"^\s*(?:add|adds|added)?\s*(?:a\s+)?(?:regression\s+)?tests?\b|\bregression test\b", re.I)
+_IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{7,}")
+
+
+def regression_support(fix: Item, tests: list[Item]) -> list[Item]:
+    """Test commits that are supporting evidence for this fix: same work (they share a specific identifier, 8+ characters, with it) within 3 days. Provable overlap only."""
+    ids = {w.lower() for w in _IDENT.findall(fix.title + " " + fix.text)} - _GENERIC
+    out = []
+    for t in tests:
+        shared = ids & {w.lower() for w in _IDENT.findall(t.title + " " + t.text)}
+        near = abs((parse_day(t.date) - parse_day(fix.date)).days) <= 3
+        if shared and near and t.id != fix.id:
+            out.append(t)
+    return out
+
+
+_GENERIC = {"function", "commit", "against", "because", "instead", "exactly", "through", "internal", "directly", "actually", "regression", "confirms", "verified", "locally"}
+
+
+def parse_day(ts: str):
+    from datetime import date
+    return date.fromisoformat(ts[:10])
+
+
 def problem_summary(i: Item) -> str:
+    if i.type == "commit":
+        return clip("Problem stated in the commit message: " + commit_problem(i) + " Change: " + i.title + ".", 420) + f" Committed on {day(i)} (from the commit message; the outcome is not independently verified)."
     sentences = re.split(r'(?<=[.!?])\s+', i.text.strip())
     problem = next((s for s in sentences if problem_evidence(Item(id='p', source=i.source, type=i.type, date=i.date, title='', text=s))), '')
     problem = re.sub(r'^\s*[A-Z][A-Z0-9]+-\d+\s*:\s*', '', problem)
@@ -216,6 +253,8 @@ def _project_facts(p: dict[str, Any]) -> list[str]:
     if p.get("goal") and not _PLACEHOLDER.search(p["goal"]):
         facts.append(f"Goal: {p['goal']}")
     facts.append(f"Role: {p['role']}" + (f", with {', '.join(p['co_contributors'][:3])}" if p.get("co_contributors") else ""))
+    if p.get("ai_assist"):  # credited truthfully as an AI assistant, apart from the people list
+        facts.append("AI assistant credited in commit trailers: " + ", ".join(p["ai_assist"]) + " (not a human collaborator)")
     if len(p.get("teams") or []) > 1:
         facts.append("Teams: " + ", ".join(f"{t['team']}{' (from ' + t['since'] + ')' if t['since'] else ''}" for t in p["teams"]))
     return facts
@@ -520,14 +559,28 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
     if kind == "weekly_summary" or kind == "weekly":
         sections[0:0] = weekly_sections(profile, by_id, new_ids, quiet_line, window_label)
 
+    cstat = coverage_status or {}
+    _lbl = {"github": "GitHub", "jira": "Jira", "slack": "Slack", "docs": "Docs"}
+
+    def none_for(text: str, *relevant: str) -> str:
+        """'None found' only speaks for the sources that were read. A source that was not read is named, so GitHub-only output never claims the world has no such work."""
+        unread = [f"{_lbl[k]} ({cstat[k]})" for k in relevant if cstat.get(k) and cstat[k] not in {"read", "in the saved profile"}]
+        if not unread:
+            return text
+        return text.replace("None found:", "None found in the sources read:", 1) + " Not read, so this says nothing about them: " + ", ".join(unread) + "."
+
     def sec(heading: str, bullets: list[str], none: str) -> dict[str, Any]:
         return {"heading": heading, "bullets": bullets} if bullets else {"heading": heading, "body": none}
     if kind in {"backfill", "profile"}:
         mine_ = [i for i in items if i.meta.get("mine")]
         fixes = [i for i in mine_ if i.type in {"pr", "ticket"} and problem_evidence(i)
                  and (shipped(i) if i.type == "pr" else str(i.meta.get("status", "")).lower() in {"done", "closed", "resolved"})]
+        cfix = [i for i in mine_ if i.type == "commit" and commit_problem(i) and not TRIVIAL_TITLE.search(i.title)]
+        tests_ = [i for i in cfix if _TESTISH.search(i.title)]
+        fixes += [i for i in cfix if i not in tests_]  # a test commit is supporting work, never a separate solved problem
+        support = {i.id: regression_support(i, tests_) for i in fixes if i.type == "commit"}
         slack_fixes = [v for v in profile["invisible"] if v["label"] == "problem_solved"]
-        solved = [block(short(i.title, 80), problem_summary(i), items=[i]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
+        solved = [block(short(i.title, 80), problem_summary(i) + ("".join(f" Regression test: {short(t.title, 70)}." for t in support.get(i.id, []))), items=[i, *support.get(i.id, [])]) for i in sorted(fixes, key=lambda x: x.date)[:8]]
         problems_rows = [{"title": short(i.title, 80), "summary": problem_summary(i), "date": day(i), "type": i.type, "link": _link(i)} for i in sorted(fixes, key=lambda x: x.date)[:8]]
         problems_rows += [{"title": by_id[v["evidence"][0]].title, "summary": re.sub(r"\s+", " ", v["summary"]).strip(), "date": day(by_id[v["evidence"][0]]), "type": "thread", "link": _link(by_id[v["evidence"][0]])}
                           for v in slack_fixes if v["evidence"] and v["evidence"][0] in by_id]
@@ -544,10 +597,10 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
             blocks_sec("Projects", [block(f"{p['name']} ({_span(p)})", p["outcome"] if not _PLACEHOLDER.search(p["outcome"]) else "",
                                           facts=_project_facts(p) + _thread_facts(p["evidence"], by_id, {x for v in profile["invisible"] for x in v["evidence"]}), items=_ev([e for e in p["evidence"] if e not in {x for d in profile["decisions"] for x in d["evidence"]} and by_id[e].type != "thread"], by_id, 14) + [by_id[e] for e in p["evidence"] if e in by_id and by_id[e].type == "thread" and e not in {x for v in profile["invisible"] for x in v["evidence"]}][:2]) for p in profile["projects"]],
                        "None found: no group of two or more linked PRs, tickets or docs yet."),
-            blocks_sec("Problems solved", solved, "None found: no fix or debugging work with your part in it."),
+            blocks_sec("Problems solved", solved, none_for("None found: no fix or debugging work with your part in it.", "jira", "slack")),
             blocks_sec("Decisions", [block(short(d["title"], 90), f"My role: {d['role']}." + ("" if _PLACEHOLDER.search(d["summary"]) else f" {d['summary']}"), items=_ev(d["evidence"], by_id, 1)) for d in profile["decisions"]],
-                       "None found: no design doc, ADR or approach-chosen thread."),
-            blocks_sec("Invisible work", inv, "None found: no Slack thread with your work that lacks a ticket or PR."),
+                       none_for("None found: no design doc, ADR or approach-chosen thread.", "docs", "slack")),
+            blocks_sec("Invisible work", inv, none_for("None found: no Slack thread with your work that lacks a ticket or PR.", "slack")),
             blocks_sec("Skills", [block(k["skill"], f"{k['count']} piece{'' if k['count'] == 1 else 's'} of work {'shows' if k['count'] == 1 else 'show'} this.", items=_ev(k["evidence"], by_id, 2, keep_order=True), label="For example") for k in profile["skills"]],
                        "None found: not enough evidence text to map skills."),
             blocks_sec("Improvement areas", [block(a["label"], f"This came up {a['count']} times in review feedback.", items=_ev(a["item_ids"], by_id, 3)) for a in profile["improvements"]],
@@ -595,7 +648,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
     # The platform's CSV export is the FIRST TABLE in the corpus, so the ledger is the only table and sits last (an appendix).
     sections.append({"heading": "Appendix: item ledger (also the CSV download)",
                      "body": f"{len(rows)} items: " + ", ".join(f"{n} {t}{'' if n == 1 else 's'}" for t, n in _type_counts([i for i in items if i.id in new_ids] if weekly_kind else items)) + (f" (newest {LEDGER_CAP} of {len(items)})" if trunc else "")
-                     + ". A PR, its commits and its ticket are separate rows for the same change. Reverts, reverted PRs, lockfile-only PRs and trivial commits are listed but not counted.",
+                     + ". A commit that belongs to one of your PRs is counted once, through the PR, not as its own row. Reverts, reverted PRs, lockfile-only PRs and trivial commits are listed but not counted.",
                      **({"table": {"columns": ledger.COLUMNS, "rows": rows}} if rows else {})})
     from interview import proposed, ACCEPTED
     def decision_counts(records):
@@ -638,7 +691,7 @@ def corpus_for(kind: str, profile: dict[str, Any], items: list[Item], *, title: 
         return next((_link(by_id[e]) for e in ids if e in by_id and by_id[e].url), "")
     if kind in {"backfill", "profile"}:
         result["project_list"] = [{"name": p["name"], "role": p["role"], "first": p["first"], "last": p["last"], "goal": "" if _PLACEHOLDER.search(p["goal"]) else p["goal"],
-                                  "outcome": "" if _PLACEHOLDER.search(p["outcome"]) else p["outcome"], "co_contributors": ", ".join(p.get("co_contributors") or []), "items": len(p["evidence"]), "link": _first_link(p["evidence"])} for p in profile["projects"]]
+                                  "outcome": "" if _PLACEHOLDER.search(p["outcome"]) else p["outcome"], "co_contributors": ", ".join(p.get("co_contributors") or []), "ai_assistant": ", ".join(p.get("ai_assist") or []), "items": len(p["evidence"]), "link": _first_link(p["evidence"])} for p in profile["projects"]]
         result["problems_solved"] = problems_rows
         result["invisible_work_list"] = [{"label": v["label"], "summary": re.sub(r"\s+", " ", v["summary"]).strip(), "date": day(by_id[v["evidence"][0]]) if v["evidence"] and v["evidence"][0] in by_id else "", "link": _first_link(v["evidence"])}
                                          for v in profile["invisible"] if v["label"] != "problem_solved"]
