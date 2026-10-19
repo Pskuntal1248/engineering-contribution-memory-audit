@@ -289,12 +289,78 @@ def baseline_project_card(pid: str, ids: list[str], by_id: dict[str, Item], user
 SKILL_LEXICON = {
     "payments & idempotency": r"idempot|payout|upi|ledger|settlement",
     "async messaging (queues)": r"queue|webhook|consumer|dead letter",
-    "frontend & accessibility": r"accessib|contrast|design system|storybook|checkout (page|flow|form)|a11y|css",
+    "frontend": r"\b(tailwind(?:css)?|css|scss|stylesheets?|storybook|design system|react component|ui component|frontend|front-end|responsive layout|checkout (?:page|flow|form))\b",
+    "accessibility": r"\b(accessib\w*|a11y|wcag|aria[- ][\w-]+|screen[- ]readers?|colou?r contrast|keyboard navigation|focus (?:ring|trap|order))\b",
     "debugging & incident response": r"incident|pager|root cause|traced|debugg|stack trace|postmortem",
     "code review": r"code review|reviewed (the |his |her |their )?(pr|pull request)|review comments?|lgtm|nit:|requested changes",
     "mentoring": r"mentor|paired|new joiner|onboard",
-    "technical design": r"adr|design doc|design:|rfc|decision",
+    "technical design": r"\badr[- ]?\d*\b|\bdesign docs?\b|\bdesign documents?\b|^design:|\brfc[- ]?\d*\b|architecture decision record",
 }
+
+
+_FIX_PROBLEM = re.compile(r"\b(bugs?|crash(?:es|ed|ing)?|broke(?:n)?|fail(?:s|ed|ing|ure|ures)?|did not|does not|doesn'?t|could not|cannot|can'?t|unreachable|double[- ](?:count|charg|bill)\w*|billed as|race|concurrent|deadlock|leak(?:s|ed)?|stuck|hang(?:s)?|hung|regress\w*|wrong|incorrect|mismatch\w*|duplicat\w*|errors?|exceptions?|time[sd]?[- ]?outs?|exit=\d+|silently|unusable|lost|dropped)\b", re.I)
+_FIX_RESOLVES = re.compile(r"\b(now|so that|prevent\w*|ensure\w*|avoid\w*|instead of|rather than|fix(?:es|ed)?|stop(?:s|ped)?|guard\w*|retr(?:y|ies)|idempotent|adds?|waits?|pass(?:es)?|verified|handles?|replac\w*|reject\w*|skip(?:s|ped)?|makes?|keeps?)\b", re.I)
+_FIX_TITLE = re.compile(r"^\s*(?:fix|stop|prevent|handle|resolve|restore|correct|avoid|guard)\b", re.I)
+_NOT_A_FIX = re.compile(r"^\s*(?:docs?|document|readme|chore|style|typo|spelling|bump|merge|revert|update dependencies|wip|format|lint)\b|\btypo\b|\bspelling\b|\bwhitespace\b", re.I)
+_OPEN = re.compile(r"\b(unresolved|not (?:yet )?(?:fixed|resolved|addressed)|remains|still open|future work|known (?:bug|issue)|won'?t fix|to be fixed|todo)\b", re.I)
+
+
+def commit_fix(title: str, text: str) -> tuple[str, str] | None:
+    """(problem sentence, resolution) for a commit whose own message BODY names a concrete problem and says what resolved it. The title alone is never enough,
+    and typo, docs, style and config commits are not problems solved. Returns None when the message does not show both."""
+    if _NOT_A_FIX.search(title or ""):
+        return None
+    body = (text or "").strip()
+    if body.startswith(title or "\0"):
+        body = body[len(title):]
+    body = re.sub(r"(?im)^\s*co-authored-by:.*$", "", body).strip()
+    if len(body) < 80:
+        return None
+    sents = [x.strip(" -*\t") for x in re.split(r"(?<=[.!?])\s+|\n\s*\n|\n\s*[-*]\s+", body) if len(x.strip()) > 25]
+    problem = next((x for x in sents if _FIX_PROBLEM.search(x) and not _OPEN.search(x)), "")
+    if not problem:
+        return None
+    resolves = bool(_FIX_TITLE.search(title or "")) or any(_FIX_RESOLVES.search(x) for x in sents if x != problem)
+    return (re.sub(r"\s+", " ", problem), title) if resolves else None
+
+
+_CONFIG_ONLY = re.compile(r"gitignore|\bignor(?:e|ed|es|ing)\b|local-only|\ballow (?:the )?track|\buntrack|\bconfig\b", re.I)
+_DESIGN_PATH = re.compile(r"(^|/)(adrs?|rfcs?|decisions?)/|(^|/)docs?/(design|architecture)/|design[-_ ]?docs?|(^|/)(adr|rfc)[-_]?\d+[^/]*\.(md|rst|adoc|txt)$", re.I)
+_DOC_EXT = re.compile(r"\.(md|rst|adoc|txt)$", re.I)
+
+
+_DOC_PATH = re.compile(r"\.(md|rst|adoc|txt)$|(^|/)docs?/|(^|/)\.?(gitignore|gitattributes|editorconfig|dockerignore)$|(^|/)(readme|license|changelog)[^/]*$", re.I)
+_UI_PATH = re.compile(r"\.(css|scss|sass|less|tsx|jsx|vue|svelte|html?)$|(^|/)(tailwind|postcss|vite|webpack)\.config\.\w+$|(^|/)\.storybook/|\.stories\.\w+$", re.I)
+_DOC_TITLE = re.compile(r"^\s*(?:docs?|chore|ci|build)\b|\b(quickstart|readme|guide|documentation|docs?|gitignore|changelog|dependenc\w*)\b", re.I)
+_TOOLING_TITLE = re.compile(r"\b(scripts?|helpers?|tooling|screenshots?|workflows?|pipelines?|docker\w*|lint\w*|ci)\b", re.I)
+_UI_SKILLS = {"frontend", "accessibility"}
+
+
+def implementation_evidence(skill: str, i: Item) -> bool:
+    """Does this PR or commit show real work for THIS skill? Files decide when known: frontend and accessibility need UI source or style files (a CI yaml, a docs
+    page or a script does not show them); every other skill only needs more than docs (relevant engineering config, e.g. a queue or payments config, still counts).
+    With no file list the title decides: docs cues never count, and for UI skills neither do tooling cues (script, helper, screenshot, CI)."""
+    if i.type not in {"pr", "commit"} or skill == "technical design":
+        return True
+    paths = i.meta.get("paths") or []
+    if paths:
+        if skill in _UI_SKILLS:
+            return any(_UI_PATH.search(p) for p in paths)
+        return not all(_DOC_PATH.search(p) for p in paths)
+    if _DOC_TITLE.search(i.title):
+        return False
+    return not (skill in _UI_SKILLS and _TOOLING_TITLE.search(i.title))
+
+
+def design_artifact(i: Item) -> bool:
+    """A technical-design skill needs a real design artifact: a doc the user wrote, or a PR/ticket/commit that adds or edits an ADR, RFC or design doc.
+    A title that merely says 'design docs' while changing a config file (e.g. .gitignore) is not one. When the commit's files are known they decide."""
+    if i.type == "doc":
+        return True
+    paths = i.meta.get("paths") or []
+    if paths:
+        return any(_DESIGN_PATH.search(p) and _DOC_EXT.search(p) for p in paths)
+    return not _CONFIG_ONLY.search(i.title)
 
 
 _RANK = {"pr": 0, "ticket": 1, "doc": 2, "thread": 3, "commit": 4, "review": 5}
@@ -319,8 +385,13 @@ def map_skills(items: list[Item]) -> list[dict[str, Any]]:
                 ok_ = in_title or len(hits) >= 2
             else:
                 ok_ = bool(hits) if i.type in {"thread", "review"} else (in_title or len(hits) >= 2)
+            if ok_ and not implementation_evidence(skill, i):
+                ok_ = False
+            if ok_ and skill == "technical design" and i.type in {"pr", "ticket", "commit"} and not design_artifact(i):
+                ok_ = False
             if ok_:
                 ids.append(i.id)
+        # one strong artifact is enough: every PR, ticket and commit above already needs the skill named in its title (and a design artifact for design)
         if len(ids) >= 2 or (len(ids) == 1 and (re.search(pat, next(i.title for i in items if i.id == ids[0]), re.I) or next(i.type for i in items if i.id == ids[0]) == "thread")):
             by = {i.id: i for i in items}
             work = _distinct_work([by[x] for x in ids])  # a PR, its ticket and its commits are one piece of work
