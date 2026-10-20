@@ -22,7 +22,7 @@ from pipeline import Config, ingest
 from sources import GatewaySource, Source
 from store import NativeMemoryStore, PlatformStore, ProfileStore, platform_store
 from ask import parse_team_changes
-from inputs import backfill_since, parse_months, validate_inputs
+from inputs import apply_slot_picks, backfill_since, parse_months, validate_inputs
 from report_notes import coverage
 from weekly import new_items, next_cursors, quiet_week_line, since_for, id_key
 
@@ -128,7 +128,7 @@ def make_graph(deps: Deps):
         return PlatformStore(ps, mem) if ps is not None else NativeMemoryStore(mem, 256)
 
     async def load(state: State) -> dict:
-        inp = dict(state.get("inputs", {}))
+        inp, pick_notes = apply_slot_picks(dict(state.get("inputs", {})))
         problems = validate_inputs(inp)
         if not problems and str(inp.get("backfill_months") or "").strip():
             try:
@@ -140,7 +140,7 @@ def make_graph(deps: Deps):
         if str(inp.get("request") or "").strip():
             inp["request"] = str(inp["request"]).strip().lower()
         mem = state.get("memory")
-        id_notes: list[str] = []
+        id_notes: list[str] = list(pick_notes)
         if not str(inp.get("timezone") or "").strip():
             id_notes.append("timezone was not given, so the default Asia/Kolkata was used for dates and periods")
         if not str(inp.get("github_username") or "").strip():  # the user's typed value always wins; only a blank is filled from the connected account
@@ -407,17 +407,16 @@ async def graph():
         if "github.get_the_authenticated_user" not in has:
             return {}
         me = await call("github.get_the_authenticated_user", {})
-        from adapters import find_key
+        from readers import find_key
         return {"login": find_key(me, "login"), "name": find_key(me, "name")}
 
     async def site():
         if "jira.get_server_info" not in has:
             return ""
-        from adapters import find_key
+        from readers import find_key
         return find_key(await call("jira.get_server_info", {}), "baseUrl", "base_url")
 
     def source_factory(cfg: Config):
         return GatewaySource(call, cfg.username, cfg.repos, cfg.slack_channels, cfg.include_dms, cfg.jira_projects, has, cfg.docs_sources, cfg.name_hints)
 
     return make_graph(Deps(source_factory, llm, embedder=embedder, identity=identity, site=site))
-
