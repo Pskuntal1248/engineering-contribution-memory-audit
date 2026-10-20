@@ -77,7 +77,7 @@ def test_blank_username_and_site_are_filled_from_the_connected_accounts():
 
     async def site():
         return "https://acme.atlassian.net/"
-    out = run({"github_username": "", "jira_site": ""}, identity=ident, site=site)
+    out = run({"github_username": "", "jira_site": "", "jira_projects": "PAY"}, identity=ident, site=site)
     notes = " ".join(out["result"]["notes"])
     assert "gh-user" in notes and "https://acme.atlassian.net" in notes and out["result"]["status"] == "completed"
 
