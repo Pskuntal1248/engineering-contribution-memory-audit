@@ -70,7 +70,7 @@ def test_skills_count_distinct_work_not_pr_ticket_commit_separately():
 
 def test_confluence_pages_list_is_used_when_cql_and_identity_are_refused():
     import asyncio
-    from adapters import fetch_confluence
+    from readers import fetch_confluence
     from guards import ToolLog
 
     async def call(name, args):
@@ -256,7 +256,7 @@ def test_project_names_are_reused_from_the_backfill_in_later_modes():
 
 def test_one_doc_fetch_failing_never_drops_the_doc_and_the_error_is_unwrapped():
     import asyncio
-    from adapters import fetch_notion
+    from readers import fetch_notion
     from guards import ToolLog, err_text
     assert "boom" in err_text(ExceptionGroup("unhandled errors in a TaskGroup", [RuntimeError("boom")]))
 
@@ -285,7 +285,7 @@ def test_technical_design_skill_cites_the_design_doc_before_the_adr_pr():
 
 def test_notion_retries_once_and_never_runs_more_than_two_page_reads_at_once():
     import asyncio, adapters
-    from adapters import fetch_notion
+    from readers import fetch_notion
     from guards import ToolLog
     adapters.BACKOFF = 0.01
     live = {"n": 0, "max": 0}
@@ -429,5 +429,4 @@ def test_decision_voice_covers_imperative_and_proposes_forms():
     assert decision_voice("Use BM25 with a recency boost.") == "We will use BM25 with a recency boost."
     assert decision_voice("Proposes: move webhooks to a queue.") == "We propose to move webhooks to a queue."
     assert decision_voice("We will keep cron.") == "We will keep cron."
-
 
