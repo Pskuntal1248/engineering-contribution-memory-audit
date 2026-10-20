@@ -436,6 +436,10 @@ def _window_work(profile: dict[str, Any], by_id: dict[str, Item], ids: set[str])
 def weekly_sections(profile: dict[str, Any], by_id: dict[str, Item], ids: set[str], quiet_line: str | None, window_label: str = "") -> list[dict[str, Any]]:
     """Weekly summary: what shipped (grouped by project), what is in progress, decisions, problems solved, help given. Items from the window only; every line links."""
     if quiet_line or not ids:
+        if quiet_line and quiet_line.startswith("Could not check"):
+            return [{"heading": "Could not check this window", "body": quiet_line}]
+        if quiet_line and "days, from the last saved run" in quiet_line:
+            return [{"heading": "Nothing new in this window", "body": quiet_line}]
         return [{"heading": "Nothing new this week", "body": quiet_line or "Nothing new this week."}]
     fresh = sorted((by_id[i] for i in ids if i in by_id and by_id[i].meta.get("mine", True)), key=lambda x: (x.date, x.id))
     pof = profile.get("project_of", {})
