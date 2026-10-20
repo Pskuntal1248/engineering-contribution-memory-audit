@@ -86,7 +86,7 @@ def test_one_on_one_is_first_person_linked_and_free_of_ids_and_trivial_wins():
 
 def test_confluence_not_enabled_fails_gracefully_and_others_continue():
     import asyncio
-    from adapters import fetch_confluence
+    from readers import fetch_confluence
     from guards import ToolLog
 
     async def raises(name, args):
@@ -161,7 +161,7 @@ def test_clip_never_cuts_mid_word_and_first_person():
 
 def test_thread_ts_is_read_from_the_permalink_when_the_search_hit_has_no_thread_ts():
     import asyncio
-    from adapters import fetch_slack_search
+    from readers import fetch_slack_search
     from guards import ToolLog
     seen = []
 
