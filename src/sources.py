@@ -102,7 +102,7 @@ class GatewaySource:
 
     async def fetch(self, since: str, until: str | None, log: ToolLog) -> dict[str, Any]:
         out: dict[str, Any] = {"github": {"prs": [], "reviews": {}, "commits": []}, "jira": [], "slack": {"channels": [], "threads": []}, "docs": [], "failed": [], "capped": []}
-        import adapters
+        import readers as adapters
 
         chans, picked, projects, verified = await self._preflight(out, log)
         if not verified:  # check every named source BEFORE doing any work: one bad input stops the whole read
@@ -155,7 +155,7 @@ class GatewaySource:
         discovery calls, everything else waits. One unverifiable input fails the whole run's reads; the errors list what
         the connected account can actually see, with close-match suggestions - nothing is silently substituted."""
         from guards import channels_to_read, is_dm_channel
-        import adapters
+        import readers as adapters
         chans: list[dict] = []
         picked: list[dict] = []
         projects = list(self.jira_projects)
@@ -220,7 +220,7 @@ class GatewaySource:
         """Every repository the tool lists for one owner: page after page (per_page is always set - the tools default to 1 for an organisation and 30 for a
         user), until a page is empty. A nonempty page that adds nothing new is the tool repeating itself, so the listing is incomplete and this raises:
         a list that could not be read to its end is never returned as if it were complete."""
-        import adapters
+        import readers as adapters
         names: list[str] = []
         seen: set[str] = set()
         for page in range(1, MAX_OWNER_PAGES + 1):
@@ -438,7 +438,7 @@ class GatewaySource:
     async def _list_channels(self, log: ToolLog) -> list[dict]:
         """All channels the connected account can see, page by page. slack.list_channels defaults to limit=1 and public channels only,
         so ask for public and private (and DMs only when the user opted in)."""
-        import adapters
+        import readers as adapters
         types = "public_channel,private_channel" + (",im,mpim" if self.include_dms else "")
         chans: list[dict] = []
         cursor = ""
@@ -459,7 +459,7 @@ class GatewaySource:
             if self.include_dms and not any(is_dm_channel(c) for c in picked):
                 out["capped"].append("include_dms=Yes but no DM was listed: add a person's Slack user ID (or *dm* for all) to the channels box to read it")
             if "slack.search_messages" in self.has and "slack.fetch_message_thread_from_a_conversation" in self.has:
-                import adapters
+                import readers as adapters
                 await adapters.fetch_slack_search(self.call, [c for c in picked if not is_dm_channel(c)], since, log, out)
                 picked = [c for c in picked if is_dm_channel(c)]  # opted-in DMs still read from history, channel by channel
             for ch in picked:
@@ -472,4 +472,3 @@ class GatewaySource:
                     out["slack"]["threads"].append({"channel": ch.get("name", ""), "channel_id": ch["id"], "messages": ms})
         except Exception as e:  # noqa: BLE001
             out["failed"].append({"source": "slack", "error": err_text(e, 200)})
-
