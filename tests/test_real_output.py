@@ -131,7 +131,7 @@ def test_notion_profile_and_untitled_pages_are_not_counted_as_docs():
 
 
 def test_error_text_is_clean_and_pr_and_ticket_share_one_evidence_line():
-    from adapters import explain
+    from readers import explain
     from outputs import block
     msg = explain("docs:confluence", 'tool said: {"code":401,"message":"Unauthorized; token has expired for this call","details":"x"}')
     assert "Unauthorized; token has expired for this call" in msg and not msg.rstrip(").").endswith("s")
@@ -162,7 +162,7 @@ def test_review_material_is_situation_action_result_per_project_with_links():
 
 def test_confluence_falls_back_to_the_pages_list_when_the_cql_search_is_refused_for_scope():
     import asyncio
-    from adapters import fetch_confluence, explain
+    from readers import fetch_confluence, explain
     from guards import ToolLog
     calls = []
 
@@ -189,7 +189,7 @@ def test_confluence_falls_back_to_the_pages_list_when_the_cql_search_is_refused_
 
 
 def test_lockfile_only_pr_trivial_commits_unknown_keys_and_single_dates():
-    from adapters import rows as _r  # noqa: F401
+    from readers import rows as _r  # noqa: F401
     import normalize as N
     from metrics import shipped
     from outputs import _drop_unknown_keys, _span
