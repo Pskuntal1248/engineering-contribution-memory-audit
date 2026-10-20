@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-import adapters
+import readers as adapters
 import agent
 from guards import ToolLog, parse_channels
 from inputs import validate_inputs
