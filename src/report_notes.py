@@ -37,7 +37,7 @@ def split_notes(notes: list[str]) -> tuple[list[str], list[str], list[str]]:
 _LABEL = {"github": "GitHub", "jira": "Jira", "slack": "Slack", "docs": "Docs"}
 
 
-def coverage(asked: dict[str, bool], failed: list[dict], item_sources: dict[str, int], saved_only: bool = False) -> tuple[str, dict[str, str]]:
+def coverage(asked: dict[str, bool], failed: list[dict], item_sources: dict[str, int], saved_only: bool = False, read_now: dict[str, bool] | None = None) -> tuple[str, dict[str, str]]:
     """What the profile covers, as one reader-facing line plus a status per source. The statuses are kept apart on purpose:
     'not requested' (the user gave nothing for it), 'not connected' (the tool refused for lack of a connection), 'could not be read'
     (any other failure) and 'partly read'. A saved-profile answer (no source read this run) reports only what the saved profile holds."""
@@ -49,6 +49,8 @@ def coverage(asked: dict[str, bool], failed: list[dict], item_sources: dict[str,
             status[key] = "in the saved profile" if have else "not in the saved profile"
         elif not asked.get(key):
             status[key] = "not requested"
+        elif errs and have and read_now is not None and not read_now.get(key, True):  # saved items exist, but nothing was read this run
+            status[key] = "could not be read"
         elif errs and have:
             status[key] = "partly read"
         elif errs:
@@ -60,5 +62,6 @@ def coverage(asked: dict[str, bool], failed: list[dict], item_sources: dict[str,
     head = ("Coverage: " + (f"{names[0]} only" if len(names) == 1 else ", ".join(names) if names else "nothing was read"))
     rest = [f"{_LABEL[k]} {v}" for k, v in status.items() if k not in good]
     partial = [f"{_LABEL[k]} only partly read" for k, v in status.items() if v == "partly read"]
-    line = head + (" (" + "; ".join(rest + partial) + ")" if rest or partial else "") + "."
+    stale = [f"{_LABEL[k]} could not be read this run; earlier saved {_LABEL[k]} work is still in the profile" for k, v in status.items() if v == "could not be read" and item_sources.get("doc" if k == "docs" else k, 0) > 0 and not saved_only]
+    line = head + (" (" + "; ".join(rest + partial + stale) + ")" if rest or partial or stale else "") + "."
     return line, status
