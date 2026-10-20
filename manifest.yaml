@@ -24,11 +24,11 @@ inputs:
     required: true
   - name: jira_projects
     type: textarea
-    label: "Jira project keys, comma separated (optional: Jira is skipped when blank or not connected)"
+    label: "Jira project keys, comma separated PAY-123 → PAY, not the space name (used only when Jira is On)"
     required: false
   - name: slack_channels
     type: textarea
-    label: "Slack channels to read (optional: public or ones you opt in, comma separated)"
+    label: "Slack channels to read (used only when Slack is On; public or ones you opt in, comma separated)"
     required: false
   - name: role_and_level
     type: text
@@ -57,12 +57,6 @@ inputs:
   - name: slack_user_ids
     type: text
     label: "Advanced: Your Slack user ID(s), comma separated"
-    required: false
-  - name: docs_source
-    type: static-dropdown
-    label: "Advanced: Docs source (pick the ones you use; each must be connected)"
-    options: ["None", "Confluence", "Notion", "Google Drive", "Confluence + Notion", "Confluence + Google Drive", "Notion + Google Drive", "All three"]
-    default: "None"
     required: false
   - name: backfill_months
     type: number
@@ -114,29 +108,40 @@ permissions:
     - github.list_commits_on_a_pull_request
     - github.list_organization_repositories
     - github.list_repositories_for_a_user
-    - jira.search_issues
-    - jira.get_all_projects
-    - jira.get_server_info
-    - jira.get_issue
-    - jira.list_issue_comments
-    - confluence.cql_search
-    - confluence.get_page_by_id
-    - confluence.get_pages
-    - confluence.get_current_user
-    - confluence.get_labels_for_page
-    - notion.search_notion_page
-    - notion.get_page_markdown
-    - notion.list_users
-    - drive.find_file
-    - drive.get_document
-    - drive.get_about
-    - drive.list_revisions
-    - slack.search_messages
-    - slack.fetch_message_thread_from_a_conversation
-    - slack.list_channels
-    - slack.read_history
   models:
     tier: standard
+
+slots:
+  jira:
+    label: "Jira"
+    default: "off"
+    adapters:
+      "off": []
+      "on": [jira.search_issues, jira.get_all_projects, jira.get_server_info, jira.get_issue, jira.list_issue_comments]
+  slack:
+    label: "Slack"
+    default: "off"
+    adapters:
+      "off": []
+      "on": [slack.search_messages, slack.fetch_message_thread_from_a_conversation, slack.list_channels, slack.read_history]
+  confluence:
+    label: "Confluence"
+    default: "off"
+    adapters:
+      "off": []
+      "on": [confluence.cql_search, confluence.get_page_by_id, confluence.get_pages, confluence.get_current_user, confluence.get_labels_for_page]
+  notion:
+    label: "Notion"
+    default: "off"
+    adapters:
+      "off": []
+      "on": [notion.search_notion_page, notion.get_page_markdown, notion.list_users]
+  google_drive:
+    label: "Google Drive"
+    default: "off"
+    adapters:
+      "off": []
+      "on": [drive.find_file, drive.get_document, drive.get_about, drive.list_revisions]
 
 triggers:
   manual: true
@@ -150,5 +155,4 @@ state:
 outputs:
   profile: {renderer: markdown, label: "Profile / report", destinations: [download]}
   ledger: {renderer: rows, label: "Item ledger (CSV)"}
-
 
