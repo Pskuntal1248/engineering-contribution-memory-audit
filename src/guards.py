@@ -319,6 +319,19 @@ def decision_voice(text: str) -> str:
     return out
 
 
+def github_error(repo: str, e: BaseException) -> str:
+    """A GitHub read failure as a sentence a person can act on, never cut-off JSON."""
+    raw = err_text(e, 2000)
+    low = raw.lower()
+    m = re.search(r'"message"\s*:\s*"([^"]+)"', raw)
+    said = (m.group(1) if m else raw).strip().rstrip(".")
+    if "cannot be searched" in low or "validation failed" in low or "404" in low or "not found" in low:
+        return f"{repo} was not found, or the connected GitHub account cannot see it. Check the owner/repo spelling (for example owner/repo, not a similar name). Nothing from it was read."
+    if any(k in low for k in ("401", "403", "forbidden", "unauthor", "bad credentials", "rate limit")):
+        return f"GitHub refused the read of {repo} (access or rate limit: {said[:160]}). Nothing from it was read."
+    return f"{repo} could not be read: {said[:200]}. Nothing from it was read."
+
+
 def err_text(e: BaseException, n: int = 160) -> str:
     """The real message of an error, looking inside ExceptionGroups ("unhandled errors in a TaskGroup")."""
     subs = getattr(e, "exceptions", None)
