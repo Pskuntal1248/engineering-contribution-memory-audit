@@ -8,7 +8,7 @@ refused, nothing is opened. Unknown history is an explicit coverage limit, never
 
 import asyncio
 
-from adapters import fetch_confluence, fetch_drive, fetch_notion
+from readers import fetch_confluence, fetch_drive, fetch_notion
 from guards import ToolLog
 
 SINCE = "2026-01-01T00:00:00Z"
