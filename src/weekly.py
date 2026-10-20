@@ -42,5 +42,14 @@ def since_for(cursor: str | None, backfill_start: str, overlap_days: int = 1) ->
     return d.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def quiet_week_line(start: str, end: str) -> str:
-    return f"No new work found between {start} and {end}."
+def quiet_week_line(start: str, end: str, unread: list[str] | None = None) -> str:
+    """The empty-window line. When a source could not be read the line says so and never claims an empty window."""
+    if unread:
+        return f"Could not check {', '.join(unread)} for {start} to {end}, so this is NOT a finding that nothing happened. See What could not be done."
+    from datetime import date
+    try:
+        days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        days = 0
+    span = f" ({days} days, from the last saved run or the first-run start, not a fixed 7 days)" if days > 8 else ""
+    return f"No new work found between {start} and {end}{span}."
