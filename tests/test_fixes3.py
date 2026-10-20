@@ -83,7 +83,7 @@ def test_unrelated_commit_same_window_stays():
 # ---------------------------------------------------------------- docs attribution
 
 def test_confluence_v2_identity_known_uses_account_id():
-    from adapters import fetch_confluence
+    from readers import fetch_confluence
     from guards import ToolLog
 
     async def call(name, args):
@@ -110,7 +110,7 @@ def test_confluence_v2_identity_known_uses_account_id():
 
 
 def test_confluence_v2_identity_refused_drops_unverifiable_pages():
-    from adapters import fetch_confluence
+    from readers import fetch_confluence
     from guards import ToolLog
     pages = {
         "1": {"body": "<p>Design</p>", "by": "Someone Else"},
@@ -147,7 +147,7 @@ def test_confluence_v2_identity_refused_drops_unverifiable_pages():
 
 
 def test_notion_bodies_are_read_only_for_id_verified_pages():
-    from adapters import fetch_notion
+    from readers import fetch_notion
     from guards import ToolLog
 
     async def call(name, args):
@@ -212,7 +212,7 @@ def test_exact_title_alone_does_not_fold_a_commit():
 
 
 def test_notion_same_name_collision_credits_nothing():
-    from adapters import fetch_notion
+    from readers import fetch_notion
     from guards import ToolLog
 
     async def call(name, args):
