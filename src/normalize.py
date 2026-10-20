@@ -308,7 +308,7 @@ def normalize_ticket(raw: dict[str, Any], site: str, username_hints: Iterable[st
                     reopen += 1
             if it.get("field") == "Key" and it.get("fromString"):
                 key_aliases.append(it["fromString"])
-    from adapters import adf_text
+    from readers import adf_text
     desc = adf_text(f.get("description"))
     parent = f.get("parent") if isinstance(f.get("parent"), dict) else {}
     epic = parent.get("key") or (f.get("epic") or {}).get("key") if isinstance(f.get("epic"), dict) else parent.get("key")
@@ -446,4 +446,3 @@ def dedupe(items: Iterable[Item]) -> tuple[list[Item], int]:
             seen_url.add(it.url)
         out.append(it)
     return out, dropped
-
