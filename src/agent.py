@@ -158,7 +158,7 @@ def make_graph(deps: Deps):
                     inp["display_name"] = str(who["name"]).strip()
             else:
                 raise RuntimeError("Could not read your GitHub username from the connected GitHub account. Connect GitHub, or type your username in 'Your GitHub username' and run again.")
-        if deps.site and not str(inp.get("jira_site") or "").strip():  # (graph() always wires deps.site)
+        if deps.site and not str(inp.get("jira_site") or "").strip() and str(inp.get("jira_projects") or "").strip():  # no project keys: Jira is not requested, so its site is not looked up  # (graph() always wires deps.site)
             base = ""
             if True:
                 try:
@@ -198,6 +198,9 @@ def make_graph(deps: Deps):
         start = backfill_since(deps.now(), parse_months(inp.get("backfill_months")) or 6)  # load() already refused a request that cannot be represented
         cursor = (ctx["prior"].get("cursors") or {}).get("github")
         since = since_for(cursor, start) if mode == "weekly" else start
+        if mode == "weekly":  # the weekly report covers the last 7 days up to the run; the read still starts at the saved cursor so nothing from a missed week is lost
+            week_start = (deps.now() - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
+            ctx["week_start"] = week_start[:10]
         if mode == "weekly":  # a PR that was still open at the last run is created before the cursor, so look back far enough to see it merge
             open_dates = [str(r.get("date") or "") for r in ctx["prior"].get("items", []) if r.get("t") == "pr" and r.get("s") == "github"
                           and (r.get("m") or {}).get("mine") and not (r.get("m") or {}).get("merged_flag") and (r.get("m") or {}).get("state") != "closed"]
@@ -231,6 +234,7 @@ def make_graph(deps: Deps):
             return {"ctx": _freeze(ctx)}
         if mode in {"backfill", "weekly"}:
             ing = ingest(ctx["raw"], cfg, ctx["log"])
+            ctx["read_now"] = {"github": any(i.source == "github" for i in ing.items)}
             seen = set(prior.get("seen", []))
             fresh, already = new_items(ing.items, seen) if mode == "weekly" else (ing.items, 0)
             new_ids = {i.id for i in fresh}
@@ -294,17 +298,24 @@ def make_graph(deps: Deps):
         colleagues = sorted({a for i in items for a in [i.author, *i.co_authors, *(i.meta.get("participants") or [])] if a and a not in names and a.lower() != cfg.username.lower()})
         terms = internal_terms(items, [t for t in str(inp.get("redact_terms", "")).replace("\n", ",").split(",")], cfg.repos[0].split("/")[0] if cfg.repos else "", cfg.jira_site)
         window = ctx["new_ids"]
+        if mode == "weekly" and ctx.get("week_start"):  # report only the last 7 days; older work found since the last saved run is saved to the profile but not listed as this week's
+            older = {i.id for i in items if i.id in window and day(i) < ctx["week_start"]}
+            window = window - older
+            if older:
+                ctx["notes"] = list(ctx["notes"]) + [f"window: {len(older)} item(s) dated before {ctx['week_start']} were found since the last saved run; they are in the saved profile but not in this week's list"]
         if mode == "weekly_summary":  # on request: the last 7 days of the saved profile
             cut = (local_now(inp) - timedelta(days=7)).strftime("%Y-%m-%d")
             window = {i.id for i in items if day(i) >= cut}
-        since = ctx.get("since", "")[:10] or (local_now(inp) - timedelta(days=7)).strftime("%Y-%m-%d")
-        window_label = f"dated since {cut} (the last 7 days)" if mode == "weekly_summary" else "new since the last run"
-        quiet = quiet_week_line(since, local_now(inp).strftime("%Y-%m-%d")) if mode in {"weekly", "weekly_summary"} and not window else None
+        since = ctx.get("week_start") or ctx.get("since", "")[:10] or (local_now(inp) - timedelta(days=7)).strftime("%Y-%m-%d")
+        window_label = f"dated since {cut} (the last 7 days)" if mode == "weekly_summary" else (f"dated {ctx['week_start']} or later (the last 7 days)" if mode == "weekly" and ctx.get("week_start") else "new since the last run")
+        gh_failed = sorted({str(f.get("source", "")).split(":", 1)[-1] for f in ctx["failed"] if str(f.get("source", "")).startswith(("github:", "github-pr-list:", "github-commits:"))})
+        unread_now = gh_failed if mode == "weekly" and gh_failed and not ctx.get("read_now", {}).get("github", False) else []
+        quiet = quiet_week_line(since, local_now(inp).strftime("%Y-%m-%d"), unread_now) if mode in {"weekly", "weekly_summary"} and (not window or unread_now) else None
         srcs: dict[str, int] = {}
         for i in items:
             srcs[i.source] = srcs.get(i.source, 0) + 1
         asked = {"github": True, "jira": bool(cfg.jira_projects), "slack": bool(cfg.slack_channels or cfg.include_dms), "docs": bool(cfg.docs_sources)}
-        cov_line, cov_status = coverage(asked, ctx["failed"], srcs, saved_only=mode in ON_DEMAND)
+        cov_line, cov_status = coverage(asked, ctx["failed"], srcs, saved_only=mode in ON_DEMAND, read_now=ctx.get("read_now"))
         title = {"backfill": "Engineering profile", "weekly": "Weekly update", "weekly_summary": "Weekly summary", "one_on_one": "1:1 talking points",
                  "review_material": "Review material", "interview_stories": "Interview stories", "evidence_gaps": "Evidence gaps"}[mode]
         corpus, result = outputs.corpus_for(mode, prof, items, title=f"{title} - {cfg.username}" if cfg.username else title, terms=terms, keep_internal=str(inp.get("keep_internal_details", "No")).lower() == "yes",
