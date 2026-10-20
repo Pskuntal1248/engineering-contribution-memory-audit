@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from guards import ToolLog, err_text
+from guards import ToolLog, err_text, github_error
 
 Call = Callable[[str, dict], Awaitable[Any]]  # call("github.list_pr_reviews", {...}) -> parsed payload
 
@@ -318,7 +318,7 @@ class GatewaySource:
             try:
                 await self._github_repo(out, repo, since, log)
             except Exception as e:  # noqa: BLE001
-                out["failed"].append({"source": f"github:{repo}", "error": err_text(e, 200)})
+                out["failed"].append({"source": f"github:{repo}", "error": github_error(repo, e)})
         if self.repos and len(out["github"]["prs"]) >= MAX_PRS_PER_REPO * len(self.repos):
             out["capped"].append("github PRs hit the per-repo cap")
 
@@ -349,7 +349,7 @@ class GatewaySource:
                         if full.get(k) not in (None, "", []) and not p.get(k):
                             p[k] = full[k]
         except Exception as e:  # noqa: BLE001 - merge state is then inferred from commits
-            out["failed"].append({"source": f"github-pr-list:{repo}", "error": err_text(e, 200)})
+            out["failed"].append({"source": f"github-pr-list:{repo}", "error": github_error(repo, e)})
 
         async def files(p: dict, allowed: bool) -> None:
             if not allowed:
@@ -397,7 +397,7 @@ class GatewaySource:
             log.add("github.list_commits", repo=repo)
             rows = await self._paged("github.list_commits", {"owner": owner, "repo": name, "author": self.username, "since": since}, ("commits",), MAX_COMMITS_PER_REPO)
         except Exception as e:  # noqa: BLE001 - named in the result
-            out["failed"].append({"source": f"github-commits:{repo}", "error": err_text(e, 200)})
+            out["failed"].append({"source": f"github-commits:{repo}", "error": github_error(repo, e)})
             return
         if len(rows) >= MAX_COMMITS_PER_REPO:
             out["capped"].append(f"commits for {repo}: first {MAX_COMMITS_PER_REPO} only")
