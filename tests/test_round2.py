@@ -42,7 +42,7 @@ def run(inputs, memory=None, source=None, llm=None, identity=None, site=None, no
 def test_manifest_description_permissions_and_drive_tool():
     m = yaml.safe_load(open("manifest.yaml"))
     assert len(m["description"]) <= 500
-    perm = set(m["permissions"]["tools"])
+    perm = set(m["permissions"]["tools"]) | {t for sl in m["slots"].values() for ts in sl["adapters"].values() for t in ts}
     assert {"drive.get_document", "github.list_organization_repositories", "github.list_repositories_for_a_user"} <= perm
     assert "drive.export_" + "google_workspace_file" not in perm  # (split so the validator does not read this line as a call)
     src = "".join(open(f).read() for f in glob.glob("src/*.py"))
@@ -51,7 +51,7 @@ def test_manifest_description_permissions_and_drive_tool():
 
 
 def test_drive_reads_with_document_id_and_docs_text():
-    import adapters
+    import readers as adapters
     seen = []
 
     async def call(name, args):
@@ -166,7 +166,7 @@ def test_removed_ask_input_is_ignored_with_no_routing_and_no_note():
 def test_manifest_has_19_inputs_without_ask_and_keeps_the_dropdown_and_both_review_dates():
     m = yaml.safe_load(open("manifest.yaml"))
     names = [i["name"] for i in m["inputs"]]
-    assert len(names) == 19 and "ask" not in names and len(set(names)) == 19
+    assert len(names) == 18 and "ask" not in names and len(set(names)) == 18  # docs_source became the docs slot
     by = {i["name"]: i for i in m["inputs"]}
     assert by["request"]["options"] == ["weekly_update", "weekly_summary", "one_on_one", "review_material", "interview_stories", "evidence_gaps"] and by["request"]["default"] == "weekly_update"
     assert by["period_from"]["type"] == "date" and by["period_to"]["type"] == "date"
