@@ -105,3 +105,28 @@ def validate_inputs(inp: dict) -> list[str]:
         if str(tz).strip() not in available_timezones():  # IANA names are case-sensitive
             errs.append(f"timezone: {tz!r} is not an IANA timezone name such as Asia/Kolkata")
     return errs
+
+
+DOCS_LABELS = [("confluence", "Confluence"), ("notion", "Notion"), ("google_drive", "Google Drive")]
+
+
+def apply_slot_picks(inp: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The optional sources are chosen with manifest slots (jira, slack, confluence, notion, google_drive: each Off or On). A pick that is absent keeps the
+    older behaviour (a source is on when its keys or channels were typed), so saved inputs keep working. An Off source is never read:
+    its typed keys are dropped with a note, and the run never calls its tools."""
+    out, notes = dict(inp), []
+    jp = str(out.get("jira") or "").strip().lower()
+    if jp == "off":
+        if str(out.get("jira_projects") or "").strip():
+            notes.append("Not covered: Jira (Jira is Off, so the typed project keys were not used)")
+        out["jira_projects"] = ""
+    sp = str(out.get("slack") or "").strip().lower()
+    if sp == "off":
+        if str(out.get("slack_channels") or "").strip():
+            notes.append("Not covered: Slack (Slack is Off, so the typed channels were not used)")
+        out["slack_channels"], out["include_dms"] = "", "No"
+    picks = {k: str(out.get(k) or "").strip().lower() for k, _ in DOCS_LABELS}
+    if any(picks.values()):
+        names = [lab for k, lab in DOCS_LABELS if picks[k] == "on"]
+        out["docs_source"] = {0: "None", 1: names[0] if names else "None", 2: " + ".join(names), 3: "All three"}[len(names)]
+    return out, notes
