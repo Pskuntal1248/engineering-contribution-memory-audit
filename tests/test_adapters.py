@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import agent
-import adapters
+import readers as adapters
 from guards import ToolLog, parse_channels
 from sources import GatewaySource
 from store import PlatformStore
@@ -294,4 +294,3 @@ def test_slack_lists_private_channels_with_paging_and_names_the_cause_once():
 
     nm = run("uc10-test", NotMember())
     assert any("not a member" in f["error"] for f in nm["failed"])
-
